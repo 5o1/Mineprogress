@@ -67,6 +67,7 @@ if ([readme, configuration, workflow, development].some(document => /[\u3400-\u9
 if (!releaseWorkflow.includes('workflow_run:') ||
     !releaseWorkflow.includes("github.event.workflow_run.conclusion == 'success'") ||
     !releaseWorkflow.includes('github.event.workflow_run.head_sha') ||
+    !releaseWorkflow.includes("startsWith(github.event.workflow_run.head_commit.message, 'chore: bump to v')") ||
     !releaseWorkflow.includes('Require successful parent CI') ||
     !releaseWorkflow.includes('--commit "$parent_sha"') ||
     !releaseValidation.includes('chore: bump to v${version}') ||
