@@ -34,4 +34,4 @@ See [Configuration](docs/configuration.md), [Workflow](docs/workflow.md), and
 
 ## License
 
-MIT License, copyright 5o1.
+MIT License, copyright [@5o1](https://github.com/5o1).
