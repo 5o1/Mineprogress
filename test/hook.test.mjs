@@ -51,6 +51,8 @@ test('UserPromptSubmit records authorization for an explicit mutating command', 
     prompt: '$mineprogress:bind PVTI_1'
   }, dataDir);
   assert.equal(submitted.status, 0, submitted.stderr);
+  const hookContext = JSON.parse(submitted.stdout).hookSpecificOutput.additionalContext;
+  assert.equal(hookContext.includes(`data_dir=${dataDir}`), true);
   const state = await readState(dataDir, 'session-auth');
   assert.deepEqual(state.pendingAuthorizations.map(entry => entry.action), ['bind']);
   assert.equal(state.journal.length, 0);

@@ -60,7 +60,7 @@ async function userPrompt(dataDir, input) {
     console.log(JSON.stringify({
       hookSpecificOutput: {
         hookEventName: 'UserPromptSubmit',
-        additionalContext: `Mineprogress command is explicitly user-triggered for session_id=${sessionId}. Pass this session id to the mineprogress CLI.`
+        additionalContext: `Mineprogress command is explicitly user-triggered for session_id=${sessionId}, data_dir=${dataDir}. Pass both values to the mineprogress CLI.`
       }
     }));
   }

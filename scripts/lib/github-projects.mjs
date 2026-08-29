@@ -37,11 +37,7 @@ export function makeClient(token, fetchImpl = globalThis.fetch) {
   };
 }
 
-const PROJECT_QUERY = `query($login:String!, $number:Int!, $after:String) {
-  user(login:$login) { projectV2(number:$number) { ...ProjectData } }
-  organization(login:$login) { projectV2(number:$number) { ...ProjectData } }
-}
-fragment ProjectData on ProjectV2 {
+const PROJECT_FRAGMENT = `fragment ProjectData on ProjectV2 {
   id title url public
   fields(first:50) { nodes {
     ... on ProjectV2FieldCommon { id name }
@@ -63,6 +59,14 @@ fragment ProjectData on ProjectV2 {
     }
   }
 }`;
+
+function projectQuery(ownerType) {
+  const rootField = ownerType === 'organization' ? 'organization' : 'user';
+  return `query($login:String!, $number:Int!, $after:String) {
+    ${rootField}(login:$login) { projectV2(number:$number) { ...ProjectData } }
+  }
+  ${PROJECT_FRAGMENT}`;
+}
 
 function selectProject(data, ownerType) {
   return ownerType === 'organization' ? data.organization?.projectV2 : data.user?.projectV2;
@@ -105,7 +109,7 @@ export async function readProject(config, client) {
   let after = null;
   let combined = null;
   do {
-    const data = await client(PROJECT_QUERY, { login: config.owner, number: config.projectNumber, after });
+    const data = await client(projectQuery(config.ownerType), { login: config.owner, number: config.projectNumber, after });
     const page = selectProject(data, config.ownerType);
     if (!page) throw infrastructureError('Configured GitHub Project was not found.', 'PROJECT_NOT_FOUND');
     if (!combined) combined = { ...page, items: { nodes: [] } };

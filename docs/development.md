@@ -24,5 +24,5 @@ archive with `git archive`, and uses GitHub CLI to create or update the matching
 or mismatched tag skips publication.
 
 Advance semver when a version is ready for formal release. For example, manifest and package version
-`0.4.0` require tag `v0.4.0`. Push main and its annotated tag atomically so the tag is available when
+`0.4.1` require tag `v0.4.1`. Push main and its annotated tag atomically so the tag is available when
 the successful CI completion triggers Release.

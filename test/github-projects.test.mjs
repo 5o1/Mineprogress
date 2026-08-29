@@ -69,6 +69,21 @@ test('readProject follows item pagination', async () => {
   assert.deepEqual(project.normalizedItems.map(item => item.itemId), ['item-1', 'item-2']);
 });
 
+test('readProject queries only the configured owner type', async () => {
+  await readProject(config, async query => {
+    assert.match(query, /\buser\(login:/);
+    assert.doesNotMatch(query, /\borganization\(login:/);
+    return projectPage();
+  });
+
+  const organizationConfig = { ...config, owner: 'acme', ownerType: 'organization' };
+  await readProject(organizationConfig, async query => {
+    assert.match(query, /\borganization\(login:/);
+    assert.doesNotMatch(query, /\buser\(login:/);
+    return { organization: { projectV2: projectPage().user.projectV2 } };
+  });
+});
+
 test('create returns the new draft item id', async () => {
   const client = async query => query.includes('addProjectV2DraftIssue')
     ? { addProjectV2DraftIssue: { projectItem: { id: 'PVTI_NEW' } } }
