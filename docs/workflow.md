@@ -15,7 +15,9 @@ later resume. No runtime file is written to the working repository:
 Codex invokes Mineprogress explicitly with `$mineprogress`; the plugin does not register a custom
 slash command. `create`, `bind`, and `unbind` require a current user instruction. Creation binds its
 new item immediately. `check` returns `suggestedAdd` and `suggestedRemove` but never changes the
-candidate list. Control commands are excluded from later update content.
+candidate list. Mutating commands consume a short-lived authorization recorded by UserPromptSubmit,
+so the CLI cannot create or change bindings on an unrelated turn. Control commands are excluded from
+later update content.
 
 ## Automatic update
 
@@ -41,3 +43,6 @@ Only an explicit user-requested `update retry` starts a fresh run over that same
 `status` folds JSONL locally and returns at most 20 unresolved summaries for the current thread. It
 does not query GitHub or expose the complete log, stack traces, tokens, personal paths, or journal.
 `status resolve <errorId>` appends a resolution event without rewriting history.
+
+Ended thread caches are retained for 30 days to support resume, then pruned from `PLUGIN_DATA` on a
+later SessionStart. `MINEPROGRESS_STATE_RETENTION_DAYS` changes that retention window.

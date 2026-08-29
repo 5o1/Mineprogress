@@ -40,3 +40,17 @@ test('hooks create thread state and Stop blocks only for bound incremental work'
   assert.equal(guarded.status, 0, guarded.stderr);
   assert.equal(guarded.stdout, '');
 });
+
+test('UserPromptSubmit records authorization for an explicit mutating command', async t => {
+  const dataDir = await fs.mkdtemp(path.join(os.tmpdir(), 'mineprogress-hook-auth-'));
+  t.after(() => fs.rm(dataDir, { recursive: true, force: true }));
+  const submitted = invoke('user-prompt', {
+    session_id: 'session-auth',
+    turn_id: 'turn-auth',
+    prompt: '$mineprogress bind PVTI_1'
+  }, dataDir);
+  assert.equal(submitted.status, 0, submitted.stderr);
+  const state = await readState(dataDir, 'session-auth');
+  assert.deepEqual(state.pendingAuthorizations.map(entry => entry.action), ['bind']);
+  assert.equal(state.journal.length, 0);
+});

@@ -4,8 +4,8 @@ Bind a Codex thread to GitHub Project items and silently update the relevant Kan
 
 ## Usage
 
-Provide `GITHUB_TOKEN` or `GH_TOKEN` with minimum Projects read/write access, install the plugin,
-start a new Codex thread, and run the guided initializer:
+Install the plugin, start a new Codex thread, and run the guided initializer. Mineprogress reuses the
+active GitHub CLI login automatically:
 
 ```text
 $mineprogress init

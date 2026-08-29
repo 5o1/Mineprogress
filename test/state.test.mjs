@@ -5,14 +5,17 @@ import os from 'node:os';
 import path from 'node:path';
 import {
   appendJournal,
+  authorizeCommand,
   beginUpdate,
   bindItem,
   completeUpdate,
+  controlCommandAction,
   isControlPrompt,
   openSession,
   pendingJournal,
   pruneStaleStates,
   readState,
+  requireCommandAuthorization,
   retryExhaustedUpdate,
   statePath,
   unbindItem,
@@ -54,6 +57,16 @@ test('binding is explicit and successful update advances incremental checkpoint'
 test('mineprogress prompts are control events and are not journal content', () => {
   assert.equal(isControlPrompt('$mineprogress check'), true);
   assert.equal(isControlPrompt('please update the code'), false);
+});
+
+test('mutating commands consume explicit short-lived user authorization', () => {
+  const state = newStateForTest();
+  assert.equal(controlCommandAction('$mineprogress create "Task"'), 'create');
+  assert.equal(authorizeCommand(state, 'create', 'turn-1'), true);
+  const consume = requireCommandAuthorization(state, 'create');
+  consume();
+  assert.throws(() => requireCommandAuthorization(state, 'create'), { code: 'USER_AUTHORIZATION_REQUIRED' });
+  assert.equal(controlCommandAction('Use Mineprogress to update retry'), 'update_retry');
 });
 
 test('new journal events do not replace an active recoverable transaction', () => {

@@ -6,8 +6,10 @@ import { fileURLToPath } from 'node:url';
 import { configPath } from './lib/config.mjs';
 import {
   appendJournal,
+  authorizeCommand,
   beginUpdate,
   completeUpdate,
+  controlCommandAction,
   isControlPrompt,
   isControlTurn,
   markControlTurn,
@@ -48,7 +50,10 @@ async function userPrompt(dataDir, input) {
   const { state } = await openSession(dataDir, sessionId);
   const prompt = input.prompt || input.user_prompt || '';
   const control = isControlPrompt(prompt);
-  if (control) markControlTurn(state, input.turn_id);
+  if (control) {
+    markControlTurn(state, input.turn_id);
+    authorizeCommand(state, controlCommandAction(prompt), input.turn_id);
+  }
   appendJournal(state, { kind: 'user', turnId: input.turn_id, text: prompt, control });
   await writeState(dataDir, state);
   if (control) {

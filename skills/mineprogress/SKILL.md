@@ -15,8 +15,8 @@ CLI from this skill's plugin root and pass both values to every stateful command
 
 - `init`: guide the user through setup. Ask for a GitHub Project URL and optional default repository,
   run `init preview`, present detected fields/statuses/visibility and any `Update` field creation,
-  then wait for explicit confirmation before `init apply --confirm`. Never request or echo a token;
-  only report that `GITHUB_TOKEN` or `GH_TOKEN` is unavailable when the CLI says so.
+  then wait for explicit confirmation before `init apply --confirm`. Never request or echo a token.
+  The CLI first reuses `gh auth login`, then falls back to environment tokens.
 - `create <title>`: require an explicit user request. Load `settings`, use the configured create
   model only to normalize the supplied title without adding intent, then run `create --title ...`.
   Creation always makes a Project draft and immediately binds it. Never create repository issues.

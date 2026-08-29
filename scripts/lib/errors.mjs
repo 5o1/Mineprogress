@@ -50,6 +50,7 @@ export async function resolveError(dataDir, errorId, resolution = 'Acknowledged 
   return appendEvent(dataDir, {
     type: 'error_resolved',
     errorId,
+    handled: true,
     resolution: sanitizeErrorText(resolution),
     timestamp: new Date().toISOString()
   });

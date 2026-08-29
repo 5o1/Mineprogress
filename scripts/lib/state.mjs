@@ -29,6 +29,7 @@ export function newState(sessionId, now = new Date().toISOString()) {
     boundItems: [],
     journal: [],
     controlTurnIds: [],
+    pendingAuthorizations: [],
     nextSequence: 1,
     lastSuccessfulUpdate: null,
     activeUpdate: null
@@ -69,7 +70,38 @@ export async function openSession(dataDir, sessionId) {
 
 export function isControlPrompt(text = '') {
   return /^\s*\$mineprogress(?:\s|$)/i.test(text) ||
-    /\bmineprogress\b[\s\S]*(?:create|bind|unbind|update|check|status|创建|绑定|解绑|更新|检查|状态)/i.test(text);
+    /\bmineprogress\b[\s\S]*(?:create|bind|unbind|update|check|status|\u521b\u5efa|\u7ed1\u5b9a|\u89e3\u7ed1|\u66f4\u65b0|\u68c0\u67e5|\u72b6\u6001)/i.test(text);
+}
+
+export function controlCommandAction(text = '') {
+  const normalized = String(text).toLowerCase();
+  const explicit = normalized.match(/\$mineprogress\s+(create|bind|unbind|update|status)/);
+  const command = explicit?.[1] || (/\bmineprogress\b/.test(normalized)
+    ? [['create', /create|\u521b\u5efa/], ['unbind', /unbind|\u89e3\u7ed1/], ['bind', /bind|\u7ed1\u5b9a/], ['update', /update|\u66f4\u65b0/], ['status', /status|\u72b6\u6001/]]
+      .find(([, pattern]) => pattern.test(normalized))?.[0]
+    : null);
+  if (command === 'update' && /\bretry\b|\u91cd\u8bd5/.test(normalized)) return 'update_retry';
+  if (command === 'status' && /\bresolve\b|\u5904\u7406|\u89e3\u51b3/.test(normalized)) return 'status_resolve';
+  return command;
+}
+
+export function authorizeCommand(state, action, turnId) {
+  if (!['create', 'bind', 'unbind', 'update_retry', 'status_resolve'].includes(action)) return false;
+  state.pendingAuthorizations ||= [];
+  if (state.pendingAuthorizations.some(entry => entry.action === action && entry.turnId === (turnId || null))) return true;
+  state.pendingAuthorizations.push({ action, turnId: turnId || null, createdAt: new Date().toISOString() });
+  state.pendingAuthorizations = state.pendingAuthorizations.slice(-20);
+  return true;
+}
+
+export function requireCommandAuthorization(state, action, now = Date.now()) {
+  state.pendingAuthorizations ||= [];
+  const index = state.pendingAuthorizations.findIndex(entry =>
+    entry.action === action && now - Date.parse(entry.createdAt) <= 10 * 60 * 1000);
+  if (index < 0) {
+    throw Object.assign(new Error(`${action} requires an explicit current Mineprogress user command.`), { code: 'USER_AUTHORIZATION_REQUIRED' });
+  }
+  return () => state.pendingAuthorizations.splice(index, 1);
 }
 
 export function appendJournal(state, { kind, turnId, text, control = false }) {
@@ -87,12 +119,13 @@ export function appendJournal(state, { kind, turnId, text, control = false }) {
 }
 
 export function markControlTurn(state, turnId) {
+  state.controlTurnIds ||= [];
   if (turnId && !state.controlTurnIds.includes(turnId)) state.controlTurnIds.push(turnId);
   state.controlTurnIds = state.controlTurnIds.slice(-50);
 }
 
 export function isControlTurn(state, turnId) {
-  return Boolean(turnId && state.controlTurnIds.includes(turnId));
+  return Boolean(turnId && state.controlTurnIds?.includes(turnId));
 }
 
 export function bindItem(state, item) {

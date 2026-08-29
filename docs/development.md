@@ -23,4 +23,4 @@ repeats verification, requires the tag to exactly match the manifest/package ver
 source archive with `git archive`, and uses GitHub CLI to create or update the matching Release.
 
 Advance semver when a version is ready for formal release. For example, manifest and package version
-`0.2.1` require tag `v0.2.1`.
+`0.3.0` require tag `v0.3.0`.

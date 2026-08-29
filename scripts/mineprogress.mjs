@@ -4,6 +4,7 @@ import path from 'node:path';
 import process from 'node:process';
 import { fileURLToPath } from 'node:url';
 import { configPath, createConfig, loadConfig, saveConfig } from './lib/config.mjs';
+import { resolveGithubToken } from './lib/auth.mjs';
 import { suggestBindings } from './lib/check.mjs';
 import {
   applyUpdatePlan,
@@ -23,6 +24,7 @@ import {
   openSession,
   pendingJournal,
   readState,
+  requireCommandAuthorization,
   requireDataDir,
   retryExhaustedUpdate,
   unbindItem,
@@ -60,8 +62,9 @@ async function readJson(file) {
   return JSON.parse(await fs.readFile(file, 'utf8'));
 }
 
-function githubClient() {
-  return makeClient(process.env.GITHUB_TOKEN || process.env.GH_TOKEN);
+async function githubClient() {
+  const authentication = await resolveGithubToken();
+  return makeClient(authentication.token);
 }
 
 export function parseProjectUrl(value) {
@@ -93,7 +96,7 @@ function initializationConfig(flags) {
 
 async function inspectInitialization(dataDir, flags) {
   const config = initializationConfig(flags);
-  const client = githubClient();
+  const client = await githubClient();
   const project = await readProject(config, client);
   const fields = project.fields?.nodes || [];
   const statusField = fields.find(field => field.name === config.statusFieldName);
@@ -107,7 +110,8 @@ async function inspectInitialization(dataDir, flags) {
     creationPolicy,
     statusFieldFound: Boolean(statusField),
     updateFieldFound: Boolean(updateField),
-    configTarget: configPath(process.env, ROOT, dataDir)
+    configTarget: configPath(process.env, ROOT, dataDir),
+    client
   };
 }
 
@@ -136,7 +140,7 @@ async function initCommand(dataDir, flags, positional) {
     throw Object.assign(new Error(`Project must contain a populated ${inspection.config.statusFieldName} single-select field.`), { code: 'PROJECT_STATUS_FIELD_REQUIRED' });
   }
   if (!inspection.updateFieldFound) {
-    await createTextField(githubClient(), inspection.project.id, inspection.config.updateFieldName);
+    await createTextField(inspection.client, inspection.project.id, inspection.config.updateFieldName);
   }
   await saveConfig(inspection.configTarget, inspection.config);
   await updateProjectMetadata(dataDir, inspection.config, {
@@ -154,17 +158,19 @@ async function initCommand(dataDir, flags, positional) {
 async function createCommand(dataDir, flags, positional) {
   const sessionId = requiredSession(flags);
   const title = flags.title || positional.join(' ');
+  const { state } = await openSession(dataDir, sessionId);
+  const consumeAuthorization = requireCommandAuthorization(state, 'create');
   const config = await pluginConfig(dataDir);
-  const item = await createKanbanItem(config, githubClient(), title);
+  const item = await createKanbanItem(config, await githubClient(), title);
+  bindItem(state, item);
+  consumeAuthorization();
+  await writeState(dataDir, state);
   await updateProjectMetadata(dataDir, config, { creationPolicy: {
     projectVisibility: item.policy.projectVisibility,
     repositoryVisibility: item.policy.repositoryVisibility,
     route: item.policy.route,
     key: item.policy.key
   } });
-  const { state } = await openSession(dataDir, sessionId);
-  bindItem(state, item);
-  await writeState(dataDir, state);
   return {
     created: {
       itemId: item.itemId,
@@ -184,12 +190,14 @@ async function bindCommand(dataDir, flags, positional) {
   const sessionId = requiredSession(flags);
   const itemId = flags.item || positional[0];
   if (!itemId) throw Object.assign(new Error('Pass --item <Project item id>.'), { code: 'ITEM_ID_REQUIRED' });
+  const { state } = await openSession(dataDir, sessionId);
+  const consumeAuthorization = requireCommandAuthorization(state, 'bind');
   const config = await pluginConfig(dataDir);
-  const project = await readProject(config, githubClient());
+  const project = await readProject(config, await githubClient());
   const item = project.normalizedItems.find(candidate => candidate.itemId === itemId);
   if (!item) throw Object.assign(new Error('Item is not in the configured Project.'), { code: 'PROJECT_ITEM_NOT_FOUND' });
-  const { state } = await openSession(dataDir, sessionId);
   const changed = bindItem(state, item);
+  consumeAuthorization();
   await writeState(dataDir, state);
   return { changed, item };
 }
@@ -199,7 +207,9 @@ async function unbindCommand(dataDir, flags, positional) {
   const itemId = flags.item || positional[0];
   if (!itemId) throw Object.assign(new Error('Pass --item <Project item id>.'), { code: 'ITEM_ID_REQUIRED' });
   const { state } = await openSession(dataDir, sessionId);
+  const consumeAuthorization = requireCommandAuthorization(state, 'unbind');
   const changed = unbindItem(state, itemId);
+  consumeAuthorization();
   await writeState(dataDir, state);
   return { changed, itemId };
 }
@@ -209,9 +219,10 @@ async function checkCommand(dataDir, flags) {
   const state = await readState(dataDir, sessionId);
   if (!state) throw Object.assign(new Error('Thread cache does not exist.'), { code: 'STATE_NOT_FOUND' });
   const config = await pluginConfig(dataDir);
-  const project = await readProject(config, githubClient());
+  const client = await githubClient();
+  const project = await readProject(config, client);
   const availableStatuses = projectStatusOptions(project, config).map(option => option.name);
-  const creationPolicy = await inspectCreationPolicy(config, githubClient(), project);
+  const creationPolicy = await inspectCreationPolicy(config, client, project);
   await updateProjectMetadata(dataDir, config, {
     availableStatuses,
     creationPolicy: {
@@ -251,7 +262,7 @@ async function prepareUpdate(dataDir, sessionId) {
     return { outcome: 'noop', reason: 'No items are bound; checkpoint advanced.' };
   }
   const config = await pluginConfig(dataDir);
-  const project = await readProject(config, githubClient());
+  const project = await readProject(config, await githubClient());
   const availableStatuses = projectStatusOptions(project, config).map(option => option.name);
   await updateProjectMetadata(dataDir, config, { availableStatuses });
   const boundIds = new Set(state.boundItems.map(item => item.itemId));
@@ -356,7 +367,7 @@ async function applyUpdate(dataDir, sessionId, flags) {
     await writeState(dataDir, state);
     return { applied: true, fieldUpdates: 0, checkpointAdvanced: true };
   }
-  const result = await applyUpdatePlan(config, githubClient(), state.activeUpdate.stagedPlan, {
+  const result = await applyUpdatePlan(config, await githubClient(), state.activeUpdate.stagedPlan, {
     alreadyApplied: state.activeUpdate.appliedOperations,
     onApplied: async key => {
       state.activeUpdate.appliedOperations.push(key);
@@ -375,7 +386,9 @@ async function updateCommand(dataDir, flags, positional) {
   if (action === 'retry') {
     const state = await readState(dataDir, sessionId);
     if (!state) throw Object.assign(new Error('Thread cache does not exist.'), { code: 'STATE_NOT_FOUND' });
+    const consumeAuthorization = requireCommandAuthorization(state, 'update_retry');
     retryExhaustedUpdate(state);
+    consumeAuthorization();
     await writeState(dataDir, state);
     return prepareUpdate(dataDir, sessionId);
   }
@@ -388,7 +401,12 @@ async function statusCommand(dataDir, flags, positional) {
   if (positional[0] === 'resolve') {
     const sessionId = requiredSession(flags);
     const errorId = flags.error || positional[1];
+    const state = await readState(dataDir, sessionId);
+    if (!state) throw Object.assign(new Error('Thread cache does not exist.'), { code: 'STATE_NOT_FOUND' });
+    const consumeAuthorization = requireCommandAuthorization(state, 'status_resolve');
     await resolveError(dataDir, errorId, flags.resolution || `Resolved from session ${sessionId}`);
+    consumeAuthorization();
+    await writeState(dataDir, state);
     return { resolved: errorId };
   }
   const all = Boolean(flags.all);

@@ -1,10 +1,14 @@
 # Configuration
 
-Mineprogress requires Node.js 22+ and has no npm runtime dependencies. Supply a token through
-`GITHUB_TOKEN` or `GH_TOKEN`, then run `$mineprogress init`. The conversational guide requests a
-Project URL and optional default repository, previews the detected configuration, asks for
-confirmation, and writes `PLUGIN_DATA/config.json`. It can create a missing `Update` text field after
-confirmation, but it will not invent a missing Status field.
+Mineprogress requires Node.js 22+ and has no npm runtime dependencies. It first reuses the active
+`gh auth login` session and falls back to `GITHUB_TOKEN` or `GH_TOKEN`. Tokens stay in memory and are
+never written to configuration or logs. Then run `$mineprogress init`. The guide requests a Project
+URL and optional default repository, previews the detected configuration, asks for confirmation, and
+writes `PLUGIN_DATA/config.json`. It can create a missing `Update` text field after confirmation, but
+it will not invent a missing Status field.
+
+Codex retries `gh` authentication once with sandbox elevation before deciding that a login is
+missing. This avoids treating a sandbox-blocked credential store as a logged-out GitHub CLI.
 
 `MINEPROGRESS_CONFIG` remains available as an advanced override for development or centrally managed
 configuration. `config.example.json` documents the complete schema; users do not need to copy it.

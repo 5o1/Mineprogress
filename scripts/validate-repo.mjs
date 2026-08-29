@@ -57,6 +57,7 @@ const requiredFiles = [
   'scripts/mineprogress.mjs',
   'scripts/hook.mjs',
   'scripts/lib/errors.mjs',
+  'scripts/lib/auth.mjs',
   'scripts/lib/state.mjs'
 ];
 for (const relative of requiredFiles) {

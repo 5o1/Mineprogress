@@ -16,7 +16,8 @@ Runtime state belongs under Codex `PLUGIN_DATA`, never in a working repository.
 
 ## Build, Test, and Development Commands
 
-Use Node.js 22 or newer. There is no build step or third-party runtime dependency.
+Use Node.js 22 or newer. There is no build step or npm runtime dependency; GitHub CLI login is the
+preferred authentication source, with environment tokens as fallback.
 
 - `npm test`: run all native `node:test` suites.
 - `npm run validate`: check versions, plugin structure, required resources, and committed secrets.

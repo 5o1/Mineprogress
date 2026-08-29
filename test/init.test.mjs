@@ -25,8 +25,10 @@ test('confirmed initialization writes config and global metadata to plugin data'
   const dataDir = await fs.mkdtemp(path.join(os.tmpdir(), 'mineprogress-init-'));
   t.after(() => fs.rm(dataDir, { recursive: true, force: true }));
   const previousToken = process.env.GITHUB_TOKEN;
+  const previousDisableGh = process.env.MINEPROGRESS_DISABLE_GH_AUTH;
   const previousFetch = globalThis.fetch;
   process.env.GITHUB_TOKEN = 'test-token';
+  process.env.MINEPROGRESS_DISABLE_GH_AUTH = '1';
   globalThis.fetch = async (_url, request) => {
     const { query } = JSON.parse(request.body);
     let data;
@@ -48,6 +50,7 @@ test('confirmed initialization writes config and global metadata to plugin data'
   t.after(() => {
     globalThis.fetch = previousFetch;
     if (previousToken === undefined) delete process.env.GITHUB_TOKEN; else process.env.GITHUB_TOKEN = previousToken;
+    if (previousDisableGh === undefined) delete process.env.MINEPROGRESS_DISABLE_GH_AUTH; else process.env.MINEPROGRESS_DISABLE_GH_AUTH = previousDisableGh;
   });
   const result = await run([
     'init', 'apply',
