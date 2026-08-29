@@ -1,42 +1,79 @@
 name: Release
 
 on:
-  push:
-    tags: ['v*']
+  workflow_run:
+    workflows: [CI]
+    types: [completed]
+    branches: [main]
 
 permissions:
   contents: write
 
+concurrency:
+  group: release-${{ github.event.workflow_run.head_sha }}
+  cancel-in-progress: false
+
 jobs:
   release:
+    if: >-
+      github.event.workflow_run.conclusion == 'success' &&
+      github.event.workflow_run.head_branch == 'main' &&
+      (github.event.workflow_run.event == 'push' || github.event.workflow_run.event == 'workflow_dispatch')
     runs-on: ubuntu-latest
     timeout-minutes: 10
+    env:
+      TARGET_SHA: ${{ github.event.workflow_run.head_sha }}
     steps:
       - uses: actions/checkout@v4
         with:
+          ref: ${{ github.event.workflow_run.head_sha }}
           fetch-depth: 0
       - uses: actions/setup-node@v4
         with:
           node-version: 24
-      - name: Test and validate plugin
-        run: npm run ci
-      - name: Validate release version
-        run: node scripts/validate-release.mjs "$GITHUB_REF_NAME"
-      - name: Build source archive
-        id: archive
+      - name: Find a release tag for the verified commit
+        id: candidate
         shell: bash
         run: |
-          asset="mineprogress-${GITHUB_REF_NAME#v}.tar.gz"
-          git archive --format=tar.gz --prefix="mineprogress-${GITHUB_REF_NAME#v}/" -o "$asset" "$GITHUB_SHA"
+          version="$(node -p "require('./package.json').version")"
+          tag="v${version}"
+          git fetch --force --tags origin
+          if ! git rev-parse --verify --quiet "refs/tags/${tag}" >/dev/null; then
+            echo "release=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          tag_sha="$(git rev-list -n 1 "$tag")"
+          if [[ "$tag_sha" != "$TARGET_SHA" ]]; then
+            echo "Tag $tag does not point to verified commit $TARGET_SHA; skipping publication."
+            echo "release=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          echo "release=true" >> "$GITHUB_OUTPUT"
+          echo "tag=$tag" >> "$GITHUB_OUTPUT"
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+      - name: Validate release version
+        if: steps.candidate.outputs.release == 'true'
+        run: node scripts/validate-release.mjs "${{ steps.candidate.outputs.tag }}"
+      - name: Build source archive
+        if: steps.candidate.outputs.release == 'true'
+        id: archive
+        shell: bash
+        env:
+          VERSION: ${{ steps.candidate.outputs.version }}
+        run: |
+          asset="mineprogress-${VERSION}.tar.gz"
+          git archive --format=tar.gz --prefix="mineprogress-${VERSION}/" -o "$asset" "$TARGET_SHA"
           echo "asset=$asset" >> "$GITHUB_OUTPUT"
       - name: Publish GitHub Release
+        if: steps.candidate.outputs.release == 'true'
         env:
           GH_TOKEN: ${{ github.token }}
+          TAG: ${{ steps.candidate.outputs.tag }}
           ASSET: ${{ steps.archive.outputs.asset }}
         shell: bash
         run: |
-          if gh release view "$GITHUB_REF_NAME" >/dev/null 2>&1; then
-            gh release upload "$GITHUB_REF_NAME" "$ASSET" --clobber
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            gh release upload "$TAG" "$ASSET" --clobber
           else
-            gh release create "$GITHUB_REF_NAME" "$ASSET" --verify-tag --generate-notes --title "$GITHUB_REF_NAME"
+            gh release create "$TAG" "$ASSET" --verify-tag --generate-notes --title "$TAG"
           fi

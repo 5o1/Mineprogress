@@ -125,7 +125,7 @@ export async function createDraftItem(config, client, title) {
     addProjectV2DraftIssue(input:{projectId:$projectId,title:$title}) { projectItem { id } }
   }`;
   const data = await client(mutation, { projectId: project.id, title: normalizedTitle });
-  return { itemId: data.addProjectV2DraftIssue?.projectV2Item?.id || data.addProjectV2DraftIssue?.projectItem?.id, title: normalizedTitle };
+  return { itemId: data.addProjectV2DraftIssue?.projectItem?.id, title: normalizedTitle };
 }
 
 function splitRepository(nameWithOwner) {
@@ -177,10 +177,10 @@ export async function createKanbanItem(config, client, title) {
   const policy = await inspectCreationPolicy(config, client, project);
   if (policy.route === 'draft') {
     const mutation = `mutation($projectId:ID!, $title:String!) {
-      addProjectV2DraftIssue(input:{projectId:$projectId,title:$title}) { projectV2Item { id } }
+      addProjectV2DraftIssue(input:{projectId:$projectId,title:$title}) { projectItem { id } }
     }`;
     const data = await client(mutation, { projectId: project.id, title: normalizedTitle });
-    const itemId = data.addProjectV2DraftIssue?.projectV2Item?.id;
+    const itemId = data.addProjectV2DraftIssue?.projectItem?.id;
     if (!itemId) throw infrastructureError('GitHub did not return the created draft item id.', 'GH_RESPONSE_INVALID');
     return { itemId, title: normalizedTitle, kind: 'draft', policy };
   }

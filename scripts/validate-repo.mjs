@@ -8,7 +8,7 @@ const root = path.dirname(path.dirname(fileURLToPath(import.meta.url)));
 const read = relative => fs.readFile(path.join(root, relative), 'utf8');
 const errors = [];
 
-const [manifest, packageJson, hooks, example, skill, readme, configuration, workflow, development] = await Promise.all([
+const [manifest, packageJson, hooks, example, skill, readme, configuration, workflow, development, releaseWorkflow] = await Promise.all([
   read('.codex-plugin/plugin.json').then(JSON.parse),
   read('package.json').then(JSON.parse),
   read('hooks/hooks.json').then(JSON.parse),
@@ -17,7 +17,8 @@ const [manifest, packageJson, hooks, example, skill, readme, configuration, work
   read('README.md'),
   read('docs/configuration.md'),
   read('docs/workflow.md'),
-  read('docs/development.md')
+  read('docs/development.md'),
+  read('.github/workflows/release.yml')
 ]);
 
 if (!/^\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?$/.test(manifest.version)) errors.push('Manifest version is not strict semver.');
@@ -45,6 +46,11 @@ if (example.creation?.routes?.private_public !== 'draft' ||
 if ('statusValues' in example) errors.push('Kanban statuses must be discovered, not hard-coded.');
 if ([readme, configuration, workflow, development].some(document => /[\u3400-\u9fff]/u.test(document))) {
   errors.push('README and docs must remain in English.');
+}
+if (!releaseWorkflow.includes('workflow_run:') ||
+    !releaseWorkflow.includes("github.event.workflow_run.conclusion == 'success'") ||
+    !releaseWorkflow.includes('github.event.workflow_run.head_sha')) {
+  errors.push('Release must be gated by a successful online CI run for the exact commit.');
 }
 
 const requiredFiles = [

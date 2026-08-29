@@ -115,6 +115,22 @@ test('public repository issue creation adds the issue to the Project', async () 
   assert.equal(calls.some(query => query.includes('addProjectV2ItemById')), true);
 });
 
+test('private Project with public repository creates a draft through projectItem payload', async () => {
+  const calls = [];
+  const client = async query => {
+    calls.push(query);
+    if (query.includes('query($login')) return projectPage();
+    if (query.includes('repository(owner')) return { repository: { id: 'R_1', nameWithOwner: 'octocat/todos', visibility: 'PUBLIC' } };
+    if (query.includes('addProjectV2DraftIssue')) return { addProjectV2DraftIssue: { projectItem: { id: 'PVTI_DRAFT' } } };
+    throw new Error('Unexpected query');
+  };
+  const item = await createKanbanItem(config, client, 'Private task');
+  assert.equal(item.kind, 'draft');
+  assert.equal(item.itemId, 'PVTI_DRAFT');
+  assert.match(calls.find(query => query.includes('addProjectV2DraftIssue')), /projectItem \{ id \}/);
+  assert.equal(calls.some(query => query.includes('projectV2Item')), false);
+});
+
 test('guided initialization can create the configured update text field', async () => {
   let variables;
   const field = await createTextField(async (query, input) => {
