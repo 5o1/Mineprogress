@@ -41,11 +41,14 @@ before submitting; no numeric coverage threshold is configured.
 ## Commit & Pull Request Guidelines
 
 History uses short Conventional Commit subjects such as `feat: add guided project setup`. Keep
-commits focused. Pull requests should explain behavior and
-configuration changes, link relevant issues, and include `npm run ci` results. Include output or
-screenshots only when user-visible rendering changes.
+commits focused. Feature and fix commits must not change package versions. Never infer permission to
+bump a version from stability, CI success, or release readiness; only do so after the repository
+owner explicitly requests a version bump. Then use a separate `chore: bump to vX.Y.Z` commit that
+changes only the version fields in `.codex-plugin/plugin.json` and `package.json`. Pull requests
+should explain behavior and configuration changes, link relevant issues, and include `npm run ci`
+results. Include output or screenshots only when user-visible rendering changes.
 
 ## Security & Release
 
 Never commit tokens, plugin cache, Project content, or personal paths. Keep GitHub permissions
-minimal. Manifest and package versions must match; a `v<version>` tag triggers the release workflow.
+minimal. Tag only the isolated bump commit; Release verifies successful CI for both it and its parent.

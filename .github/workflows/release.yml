@@ -7,6 +7,7 @@ on:
     branches: [main]
 
 permissions:
+  actions: read
   contents: write
 
 concurrency:
@@ -51,9 +52,20 @@ jobs:
           echo "release=true" >> "$GITHUB_OUTPUT"
           echo "tag=$tag" >> "$GITHUB_OUTPUT"
           echo "version=$version" >> "$GITHUB_OUTPUT"
-      - name: Validate release version
+      - name: Validate isolated version bump
         if: steps.candidate.outputs.release == 'true'
         run: node scripts/validate-release.mjs "${{ steps.candidate.outputs.tag }}"
+      - name: Require successful parent CI
+        if: steps.candidate.outputs.release == 'true'
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          parent_sha="$(git rev-parse "${TARGET_SHA}^")"
+          gh run list --repo "$GITHUB_REPOSITORY" --workflow CI --commit "$parent_sha" --limit 20 \
+            --json conclusion,event,headSha,status \
+            | jq -e --arg sha "$parent_sha" \
+              'any(.[]; .headSha == $sha and .status == "completed" and .conclusion == "success" and (.event == "push" or .event == "workflow_dispatch"))'
       - name: Build source archive
         if: steps.candidate.outputs.release == 'true'
         id: archive

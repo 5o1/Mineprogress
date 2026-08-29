@@ -9,7 +9,7 @@ const read = relative => fs.readFile(path.join(root, relative), 'utf8');
 const errors = [];
 
 const skillNames = ['init', 'create', 'bind', 'unbind', 'update', 'check', 'status'];
-const [manifest, packageJson, hooks, example, readme, configuration, workflow, development, releaseWorkflow, skillEntries] = await Promise.all([
+const [manifest, packageJson, hooks, example, readme, configuration, workflow, development, releaseWorkflow, releaseValidation, skillEntries] = await Promise.all([
   read('.codex-plugin/plugin.json').then(JSON.parse),
   read('package.json').then(JSON.parse),
   read('hooks/hooks.json').then(JSON.parse),
@@ -19,6 +19,7 @@ const [manifest, packageJson, hooks, example, readme, configuration, workflow, d
   read('docs/workflow.md'),
   read('docs/development.md'),
   read('.github/workflows/release.yml'),
+  read('scripts/validate-release.mjs'),
   Promise.all(skillNames.map(async name => ({
     name,
     skill: await read(`skills/${name}/SKILL.md`),
@@ -65,7 +66,11 @@ if ([readme, configuration, workflow, development].some(document => /[\u3400-\u9
 }
 if (!releaseWorkflow.includes('workflow_run:') ||
     !releaseWorkflow.includes("github.event.workflow_run.conclusion == 'success'") ||
-    !releaseWorkflow.includes('github.event.workflow_run.head_sha')) {
+    !releaseWorkflow.includes('github.event.workflow_run.head_sha') ||
+    !releaseWorkflow.includes('Require successful parent CI') ||
+    !releaseWorkflow.includes('--commit "$parent_sha"') ||
+    !releaseValidation.includes('chore: bump to v${version}') ||
+    !releaseValidation.includes("['.codex-plugin/plugin.json', 'package.json']")) {
   errors.push('Release must be gated by a successful online CI run for the exact commit.');
 }
 
