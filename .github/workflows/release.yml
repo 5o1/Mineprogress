@@ -1,0 +1,42 @@
+name: Release
+
+on:
+  push:
+    tags: ['v*']
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+      - name: Test and validate plugin
+        run: npm run ci
+      - name: Validate release version
+        run: node scripts/validate-release.mjs "$GITHUB_REF_NAME"
+      - name: Build source archive
+        id: archive
+        shell: bash
+        run: |
+          asset="mineprogress-${GITHUB_REF_NAME#v}.tar.gz"
+          git archive --format=tar.gz --prefix="mineprogress-${GITHUB_REF_NAME#v}/" -o "$asset" "$GITHUB_SHA"
+          echo "asset=$asset" >> "$GITHUB_OUTPUT"
+      - name: Publish GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          ASSET: ${{ steps.archive.outputs.asset }}
+        shell: bash
+        run: |
+          if gh release view "$GITHUB_REF_NAME" >/dev/null 2>&1; then
+            gh release upload "$GITHUB_REF_NAME" "$ASSET" --clobber
+          else
+            gh release create "$GITHUB_REF_NAME" "$ASSET" --verify-tag --generate-notes --title "$GITHUB_REF_NAME"
+          fi

@@ -1,0 +1,18 @@
+{
+  "name": "mineprogress",
+  "version": "0.2.0",
+  "private": true,
+  "license": "MIT",
+  "repository": "https://github.com/5o1/Mineprogress.git",
+  "type": "module",
+  "engines": {
+    "node": ">=22"
+  },
+  "scripts": {
+    "test": "node --test test/*.test.mjs",
+    "check": "node scripts/mineprogress.mjs check",
+    "status": "node scripts/mineprogress.mjs status",
+    "validate": "node scripts/validate-repo.mjs",
+    "ci": "npm test && npm run validate"
+  }
+}

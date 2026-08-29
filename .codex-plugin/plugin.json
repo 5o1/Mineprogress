@@ -1,0 +1,28 @@
+{
+  "name": "mineprogress",
+  "version": "0.2.0",
+  "description": "Thread-scoped GitHub Projects Kanban updates for Codex.",
+  "author": {
+    "name": "5o1",
+    "url": "https://github.com/5o1"
+  },
+  "homepage": "https://github.com/5o1/Mineprogress",
+  "repository": "https://github.com/5o1/Mineprogress",
+  "license": "MIT",
+  "keywords": ["github", "projects", "kanban", "todo", "codex"],
+  "skills": "./skills/",
+  "interface": {
+    "displayName": "Mineprogress",
+    "shortDescription": "Thread-scoped Kanban updates for GitHub Projects",
+    "longDescription": "Bind GitHub Project items to a Codex thread, review concise updates, and keep plugin state outside repositories.",
+    "developerName": "5o1",
+    "category": "Productivity",
+    "capabilities": ["Read", "Write"],
+    "defaultPrompt": [
+      "$mineprogress init",
+      "$mineprogress check",
+      "$mineprogress update"
+    ],
+    "brandColor": "#24292F"
+  }
+}

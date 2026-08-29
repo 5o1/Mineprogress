@@ -1,0 +1,32 @@
+{
+  "owner": "your-github-login",
+  "ownerType": "user",
+  "projectNumber": 1,
+  "defaultRepository": "your-github-login/private-todos",
+  "statusFieldName": "Status",
+  "updateFieldName": "Update",
+  "kanban": {
+    "terminalStatuses": []
+  },
+  "creation": {
+    "projectVisibility": "auto",
+    "repositoryVisibility": "auto",
+    "routes": {
+      "public_private": "issue",
+      "public_public": "issue",
+      "private_private": "issue",
+      "private_public": "draft"
+    }
+  },
+  "update": {
+    "maxReviewAttempts": 5,
+    "maxSummaryCharacters": 500,
+    "maxSummaryWords": 80
+  },
+  "models": {
+    "create": { "model": "gpt-5.6-luna", "reasoningEffort": "medium" },
+    "update": { "model": "gpt-5.6-luna", "reasoningEffort": "medium" },
+    "review": { "model": "gpt-5.6-luna", "reasoningEffort": "medium" },
+    "preferFastMode": true
+  }
+}
