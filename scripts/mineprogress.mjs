@@ -45,7 +45,7 @@ function parseArgs(argv) {
     const value = argv[index];
     if (!value.startsWith('--')) { positional.push(value); continue; }
     const key = value.slice(2);
-    if (['all', 'json', 'confirm'].includes(key)) flags[key] = true;
+    if (['all', 'json', 'confirm', 'no-repository'].includes(key)) flags[key] = true;
     else flags[key] = argv[++index];
   }
   return { positional, flags };
@@ -86,6 +86,9 @@ export function parseProjectUrl(value) {
 
 function initializationConfig(flags) {
   if (!flags['project-url']) throw Object.assign(new Error('Pass --project-url <GitHub Project URL>.'), { code: 'PROJECT_URL_REQUIRED' });
+  if (flags.repository && flags['no-repository']) {
+    throw Object.assign(new Error('Use either --repository or --no-repository, not both.'), { code: 'CONFIG_INVALID' });
+  }
   return createConfig({
     ...parseProjectUrl(flags['project-url']),
     defaultRepository: flags.repository || '',
@@ -94,20 +97,49 @@ function initializationConfig(flags) {
   });
 }
 
+export function resolveInitializationRepository(flags, project) {
+  const candidates = [...new Map((project.repositories?.nodes || [])
+    .filter(repository => repository?.nameWithOwner)
+    .map(repository => [repository.nameWithOwner, {
+      nameWithOwner: repository.nameWithOwner,
+      visibility: repository.visibility?.toLowerCase() || null
+    }])).values()];
+  if (flags.repository) {
+    return { defaultRepository: flags.repository, source: 'explicit', candidates, selectionRequired: false };
+  }
+  if (flags['no-repository']) {
+    return { defaultRepository: '', source: 'explicit-none', candidates, selectionRequired: false };
+  }
+  if (candidates.length === 1) {
+    return { defaultRepository: candidates[0].nameWithOwner, source: 'project', candidates, selectionRequired: false };
+  }
+  return {
+    defaultRepository: '',
+    source: candidates.length ? null : 'none',
+    candidates,
+    selectionRequired: candidates.length > 1
+  };
+}
+
 async function inspectInitialization(dataDir, flags) {
-  const config = initializationConfig(flags);
+  let config = initializationConfig(flags);
   const client = await githubClient();
   const project = await readProject(config, client);
+  const repositorySelection = resolveInitializationRepository(flags, project);
+  config = createConfig({ ...config, defaultRepository: repositorySelection.defaultRepository });
   const fields = project.fields?.nodes || [];
   const statusField = fields.find(field => field.name === config.statusFieldName);
   const updateField = fields.find(field => field.name === config.updateFieldName);
   const availableStatuses = (statusField?.options || []).map(option => option.name);
-  const creationPolicy = await inspectCreationPolicy(config, client, project);
+  const creationPolicy = repositorySelection.selectionRequired
+    ? null
+    : await inspectCreationPolicy(config, client, project);
   return {
     config,
     project,
     availableStatuses,
     creationPolicy,
+    repositorySelection,
     statusFieldFound: Boolean(statusField),
     updateFieldFound: Boolean(updateField),
     configTarget: configPath(process.env, ROOT, dataDir),
@@ -124,15 +156,23 @@ async function initCommand(dataDir, flags, positional) {
     ownerType: inspection.config.ownerType,
     projectNumber: inspection.config.projectNumber,
     defaultRepository: inspection.config.defaultRepository || null,
-    projectVisibility: inspection.creationPolicy.projectVisibility,
-    repositoryVisibility: inspection.creationPolicy.repositoryVisibility,
-    creationRoute: inspection.creationPolicy.route,
+    defaultRepositorySource: inspection.repositorySelection.source,
+    repositoryCandidates: inspection.repositorySelection.candidates,
+    projectVisibility: inspection.creationPolicy?.projectVisibility || (inspection.project.public ? 'public' : 'private'),
+    repositoryVisibility: inspection.creationPolicy?.repositoryVisibility || null,
+    creationRoute: inspection.creationPolicy?.route || null,
     availableStatuses: inspection.availableStatuses,
     statusFieldFound: inspection.statusFieldFound,
     updateFieldFound: inspection.updateFieldFound,
     willCreateFields: inspection.updateFieldFound ? [] : [inspection.config.updateFieldName],
     configTarget: inspection.configTarget
   };
+  if (inspection.repositorySelection.selectionRequired) {
+    if (action === 'apply') {
+      throw Object.assign(new Error('The Project links multiple repositories; select one with --repository or choose --no-repository.'), { code: 'DEFAULT_REPOSITORY_SELECTION_REQUIRED' });
+    }
+    return { outcome: 'repository_selection_required', ...preview };
+  }
   if (action === 'preview') return { outcome: 'confirmation_required', ...preview };
   if (action !== 'apply') throw Object.assign(new Error(`Unknown init action: ${action}`), { code: 'INIT_ACTION_INVALID' });
   if (!flags.confirm) throw Object.assign(new Error('init apply requires --confirm after user confirmation.'), { code: 'INIT_CONFIRMATION_REQUIRED' });

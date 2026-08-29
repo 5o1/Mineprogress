@@ -3,9 +3,10 @@
 Mineprogress requires Node.js 22+ and has no npm runtime dependencies. It first reuses the active
 `gh auth login` session and falls back to `GITHUB_TOKEN` or `GH_TOKEN`. Tokens stay in memory and are
 never written to configuration or logs. Then run `$mineprogress:init`. The guide requests a Project
-URL and optional default repository, previews the detected configuration, asks for confirmation, and
-writes `PLUGIN_DATA/config.json`. It can create a missing `Update` text field after confirmation, but
-it will not invent a missing Status field.
+URL and reads its linked repositories, previews the detected configuration, asks for confirmation,
+and writes `PLUGIN_DATA/config.json`. One linked repository is selected automatically; multiple
+repositories require a choice, and no linked repository uses draft creation. It can create a missing
+`Update` text field after confirmation, but it will not invent a missing Status field.
 
 Codex retries `gh` authentication once with sandbox elevation before deciding that a login is
 missing. This avoids treating a sandbox-blocked credential store as a logged-out GitHub CLI.
@@ -18,7 +19,7 @@ configuration. `config.example.json` documents the complete schema; users do not
 - `owner`: user or organization login.
 - `ownerType`: `user` or `organization`.
 - `projectNumber`: the number shown in the Project URL.
-- `defaultRepository`: default repository in `owner/name` form.
+- `defaultRepository`: repository selected from the Project's linked repositories, in `owner/name` form.
 - `statusFieldName` / `updateFieldName`: single-select status and concise update text fields.
 
 `check` reads the real options from the Status field and saves them in the global plugin cache.

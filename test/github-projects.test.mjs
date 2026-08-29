@@ -27,6 +27,7 @@ function projectPage({ hasNextPage = false, endCursor = null } = {}) {
       projectV2: {
         id: 'PVT_1',
         public: false,
+        repositories: { totalCount: 1, nodes: [{ nameWithOwner: 'octocat/todos', visibility: 'PUBLIC' }] },
         fields: { nodes: [
           { id: 'status-field', name: 'Status', options: [{ id: 'done-option', name: 'Done' }] },
           { id: 'update-field', name: 'Update' }
@@ -73,6 +74,7 @@ test('readProject queries only the configured owner type', async () => {
   await readProject(config, async query => {
     assert.match(query, /\buser\(login:/);
     assert.doesNotMatch(query, /\borganization\(login:/);
+    assert.match(query, /repositories\(first:100\)/);
     return projectPage();
   });
 

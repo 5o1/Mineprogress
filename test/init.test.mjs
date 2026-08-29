@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
-import { parseProjectUrl } from '../scripts/mineprogress.mjs';
+import { parseProjectUrl, resolveInitializationRepository } from '../scripts/mineprogress.mjs';
 import { run } from '../scripts/mineprogress.mjs';
 import { readProjectMetadata } from '../scripts/lib/metadata.mjs';
 
@@ -21,6 +21,34 @@ test('guided initialization rejects non-GitHub and malformed Project URLs', () =
   assert.throws(() => parseProjectUrl('https://github.com/a/projects/1'), { code: 'PROJECT_URL_INVALID' });
 });
 
+test('guided initialization uses the sole repository linked to the Project', () => {
+  const result = resolveInitializationRepository({}, { repositories: { nodes: [
+    { nameWithOwner: 'octocat/todos', visibility: 'PUBLIC' }
+  ] } });
+  assert.deepEqual(result, {
+    defaultRepository: 'octocat/todos',
+    source: 'project',
+    candidates: [{ nameWithOwner: 'octocat/todos', visibility: 'public' }],
+    selectionRequired: false
+  });
+});
+
+test('guided initialization requires a choice only for multiple linked repositories', () => {
+  const project = { repositories: { nodes: [
+    { nameWithOwner: 'octocat/one', visibility: 'PRIVATE' },
+    { nameWithOwner: 'octocat/two', visibility: 'PUBLIC' }
+  ] } };
+  const ambiguous = resolveInitializationRepository({}, project);
+  assert.equal(ambiguous.selectionRequired, true);
+  assert.deepEqual(ambiguous.candidates.map(candidate => candidate.nameWithOwner), ['octocat/one', 'octocat/two']);
+  assert.deepEqual(resolveInitializationRepository({ 'no-repository': true }, project), {
+    defaultRepository: '',
+    source: 'explicit-none',
+    candidates: ambiguous.candidates,
+    selectionRequired: false
+  });
+});
+
 test('confirmed initialization writes config and global metadata to plugin data', async t => {
   const dataDir = await fs.mkdtemp(path.join(os.tmpdir(), 'mineprogress-init-'));
   t.after(() => fs.rm(dataDir, { recursive: true, force: true }));
@@ -35,6 +63,7 @@ test('confirmed initialization writes config and global metadata to plugin data'
     if (query.includes('query($login')) {
       data = { user: { projectV2: {
         id: 'PVT_1', title: 'Tasks', public: false,
+        repositories: { totalCount: 1, nodes: [{ nameWithOwner: 'octocat/todos', visibility: 'PUBLIC' }] },
         fields: { nodes: [{ id: 'status', name: 'Status', options: [{ id: 'doing', name: 'Doing' }] }] },
         items: { pageInfo: { hasNextPage: false, endCursor: null }, nodes: [] }
       } }, organization: null };

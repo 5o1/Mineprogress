@@ -39,6 +39,10 @@ export function makeClient(token, fetchImpl = globalThis.fetch) {
 
 const PROJECT_FRAGMENT = `fragment ProjectData on ProjectV2 {
   id title url public
+  repositories(first:100) {
+    totalCount
+    nodes { nameWithOwner visibility }
+  }
   fields(first:50) { nodes {
     ... on ProjectV2FieldCommon { id name }
     ... on ProjectV2SingleSelectField { id name options { id name } }
