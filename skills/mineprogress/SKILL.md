@@ -19,7 +19,8 @@ CLI from this skill's plugin root and pass both values to every stateful command
   The CLI first reuses `gh auth login`, then falls back to environment tokens.
 - `create <title>`: require an explicit user request. Load `settings`, use the configured create
   model only to normalize the supplied title without adding intent, then run `create --title ...`.
-  Creation always makes a Project draft and immediately binds it. Never create repository issues.
+  Creation follows the configured Project/repository visibility route, creates either a repository
+  issue or Project draft, and immediately binds the resulting Project item.
 - `bind <itemId>` / `unbind <itemId>`: run only from the user's current command. Never infer either
   operation from conversation or from `check` suggestions.
 - `check`: run the read-only comparison and show `suggestedAdd` / `suggestedRemove`. It never changes
