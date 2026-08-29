@@ -8,23 +8,39 @@ const root = path.dirname(path.dirname(fileURLToPath(import.meta.url)));
 const read = relative => fs.readFile(path.join(root, relative), 'utf8');
 const errors = [];
 
-const [manifest, packageJson, hooks, example, skill, readme, configuration, workflow, development, releaseWorkflow] = await Promise.all([
+const skillNames = ['init', 'create', 'bind', 'unbind', 'update', 'check', 'status'];
+const [manifest, packageJson, hooks, example, readme, configuration, workflow, development, releaseWorkflow, skillEntries] = await Promise.all([
   read('.codex-plugin/plugin.json').then(JSON.parse),
   read('package.json').then(JSON.parse),
   read('hooks/hooks.json').then(JSON.parse),
   read('config.example.json').then(JSON.parse),
-  read('skills/mineprogress/SKILL.md'),
   read('README.md'),
   read('docs/configuration.md'),
   read('docs/workflow.md'),
   read('docs/development.md'),
-  read('.github/workflows/release.yml')
+  read('.github/workflows/release.yml'),
+  Promise.all(skillNames.map(async name => ({
+    name,
+    skill: await read(`skills/${name}/SKILL.md`),
+    agent: await read(`skills/${name}/agents/openai.yaml`)
+  })))
 ]);
 
 if (!/^\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?$/.test(manifest.version)) errors.push('Manifest version is not strict semver.');
 if (manifest.version !== packageJson.version) errors.push('Manifest and package versions differ.');
 if (manifest.name !== packageJson.name) errors.push('Manifest and package names differ.');
-if (!skill.includes('allow_implicit_invocation: false')) errors.push('Mineprogress skill must require explicit invocation.');
+let discoveryCharacters = 0;
+for (const { name, skill, agent } of skillEntries) {
+  if (!skill.startsWith('---\n') || !skill.includes(`\nname: ${name}\n`)) errors.push(`Skill ${name} has invalid frontmatter.`);
+  const description = skill.match(/^description:\s*(.+)$/m)?.[1]?.trim() || '';
+  discoveryCharacters += name.length + description.length;
+  if (!description || description.length > 160) errors.push(`Skill ${name} description must be concise.`);
+  if (skill.split(/\s+/u).filter(Boolean).length > 300) errors.push(`Skill ${name} body exceeds the prompt budget.`);
+  if (!agent.includes('allow_implicit_invocation: false')) errors.push(`Skill ${name} must require explicit invocation.`);
+  if (!agent.includes(`$mineprogress:${name}`)) errors.push(`Skill ${name} UI prompt must use its qualified command.`);
+}
+if (discoveryCharacters > 900) errors.push('Command Skill discovery metadata exceeds the prompt budget.');
+if (manifest.interface?.defaultPrompt?.includes('$mineprogress:init') !== true) errors.push('Plugin default prompt must use a qualified command Skill.');
 if (!hooks.hooks?.SessionStart || !hooks.hooks?.UserPromptSubmit || !hooks.hooks?.Stop || !hooks.hooks?.SessionEnd) {
   errors.push('Required lifecycle hooks are missing.');
 }

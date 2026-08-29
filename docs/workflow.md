@@ -12,16 +12,17 @@ later resume. No runtime file is written to the working repository:
 
 ## Command boundary
 
-Codex invokes Mineprogress explicitly with `$mineprogress`; the plugin does not register a custom
-slash command. `create`, `bind`, and `unbind` require a current user instruction. Creation binds its
-new item immediately. `check` returns `suggestedAdd` and `suggestedRemove` but never changes the
-candidate list. Mutating commands consume a short-lived authorization recorded by UserPromptSubmit,
-so the CLI cannot create or change bindings on an unrelated turn. Control commands are excluded from
-later update content.
+Codex exposes one explicit Skill per operation: `$mineprogress:init`, `$mineprogress:create`,
+`$mineprogress:bind`, `$mineprogress:unbind`, `$mineprogress:update`, `$mineprogress:check`, and
+`$mineprogress:status`. The plugin does not register a custom slash command. Creation binds its new
+item immediately. `check` returns `suggestedAdd` and `suggestedRemove` but never changes the candidate
+list. Mutating commands consume a short-lived authorization recorded by UserPromptSubmit, so the CLI
+cannot create or change bindings on an unrelated turn. Control commands are excluded from later
+update content.
 
 ## Automatic update
 
-Stop and manual `$mineprogress update` use the same workflow:
+Stop and manual `$mineprogress:update` use the same workflow:
 
 1. Select only the journal after the last successful checkpoint and currently bound items.
 2. Generate a restricted JSON plan, then locally check fields, bound IDs, actual statuses, size, and

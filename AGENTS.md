@@ -7,7 +7,7 @@ Mineprogress is a dependency-free Node.js Codex plugin for thread-bound GitHub P
 - `scripts/mineprogress.mjs`: command entry point for init, create, bind, update, check, and status.
 - `scripts/hook.mjs`: SessionStart, UserPromptSubmit, Stop, and SessionEnd adapter.
 - `scripts/lib/`: configuration, GitHub GraphQL, state, validation, metadata, and error modules.
-- `hooks/hooks.json` and `skills/mineprogress/SKILL.md`: Codex lifecycle and explicit Skill behavior.
+- `hooks/hooks.json` and `skills/<command>/SKILL.md`: lifecycle hooks and command-specific Skills.
 - `prompts/`: update and reviewer output contracts.
 - `test/*.test.mjs`: Node test suites; `docs/` contains detailed user and maintainer guidance.
 - `.github/workflows/`: focused CI and tag-based GitHub Release automation.
@@ -22,7 +22,7 @@ preferred authentication source, with environment tokens as fallback.
 - `npm test`: run all native `node:test` suites.
 - `npm run validate`: check versions, plugin structure, required resources, and committed secrets.
 - `npm run ci`: run the same test and validation sequence used by GitHub Actions.
-- `$mineprogress init`: run the user-facing guided Project setup inside Codex.
+- `$mineprogress:init`: run the user-facing guided Project setup inside Codex.
 
 ## Coding Style & Naming Conventions
 
@@ -40,9 +40,8 @@ before submitting; no numeric coverage threshold is configured.
 
 ## Commit & Pull Request Guidelines
 
-The existing history contains only an initial license commit, so no established message convention
-exists. Use short imperative subjects, preferably Conventional Commits such as
-`feat: add guided project setup`. Keep commits focused. Pull requests should explain behavior and
+History uses short Conventional Commit subjects such as `feat: add guided project setup`. Keep
+commits focused. Pull requests should explain behavior and
 configuration changes, link relevant issues, and include `npm run ci` results. Include output or
 screenshots only when user-visible rendering changes.
 

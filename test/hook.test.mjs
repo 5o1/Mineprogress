@@ -24,6 +24,7 @@ test('hooks create thread state and Stop blocks only for bound incremental work'
   const started = invoke('session-start', { session_id: 'session-1', source: 'startup' }, dataDir);
   assert.equal(started.status, 0, started.stderr);
   assert.match(started.stdout, /created thread cache/);
+  assert.match(started.stdout, /\$mineprogress:init/);
 
   const prompt = invoke('user-prompt', { session_id: 'session-1', turn_id: 'turn-1', prompt: 'Implement parser tests.' }, dataDir);
   assert.equal(prompt.status, 0, prompt.stderr);
@@ -47,7 +48,7 @@ test('UserPromptSubmit records authorization for an explicit mutating command', 
   const submitted = invoke('user-prompt', {
     session_id: 'session-auth',
     turn_id: 'turn-auth',
-    prompt: '$mineprogress bind PVTI_1'
+    prompt: '$mineprogress:bind PVTI_1'
   }, dataDir);
   assert.equal(submitted.status, 0, submitted.stderr);
   const state = await readState(dataDir, 'session-auth');

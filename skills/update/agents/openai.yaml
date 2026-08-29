@@ -1,0 +1,6 @@
+interface:
+  display_name: "Mineprogress: Update"
+  short_description: "Review and update bound Project items"
+  default_prompt: "Use $mineprogress:update to update the bound items from this thread."
+policy:
+  allow_implicit_invocation: false

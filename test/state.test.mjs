@@ -55,13 +55,24 @@ test('binding is explicit and successful update advances incremental checkpoint'
 });
 
 test('mineprogress prompts are control events and are not journal content', () => {
-  assert.equal(isControlPrompt('$mineprogress check'), true);
+  for (const command of ['init', 'create', 'bind', 'unbind', 'update', 'check', 'status']) {
+    assert.equal(isControlPrompt(`$mineprogress:${command}`), true, command);
+  }
+  assert.equal(isControlPrompt('$mineprogress check'), false);
+  assert.equal(isControlPrompt('$mineprogress:mineprogress check'), false);
   assert.equal(isControlPrompt('please update the code'), false);
 });
 
 test('mutating commands consume explicit short-lived user authorization', () => {
   const state = newStateForTest();
-  assert.equal(controlCommandAction('$mineprogress create "Task"'), 'create');
+  assert.equal(controlCommandAction('$mineprogress:create "Task"'), 'create');
+  assert.equal(controlCommandAction('$mineprogress:bind PVTI_1'), 'bind');
+  assert.equal(controlCommandAction('$mineprogress:unbind PVTI_1'), 'unbind');
+  assert.equal(controlCommandAction('$mineprogress:update retry'), 'update_retry');
+  assert.equal(controlCommandAction('$mineprogress:status resolve error-1'), 'status_resolve');
+  assert.equal(controlCommandAction('$mineprogress:init'), 'init');
+  assert.equal(controlCommandAction('$mineprogress:check'), 'check');
+  assert.equal(controlCommandAction('$mineprogress create "Task"'), null);
   assert.equal(authorizeCommand(state, 'create', 'turn-1'), true);
   const consume = requireCommandAuthorization(state, 'create');
   consume();

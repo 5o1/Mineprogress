@@ -1,6 +1,6 @@
 {
   "name": "mineprogress",
-  "version": "0.3.2",
+  "version": "0.4.0",
   "description": "Thread-scoped GitHub Projects Kanban updates for Codex.",
   "author": {
     "name": "5o1",
@@ -18,11 +18,7 @@
     "developerName": "5o1",
     "category": "Productivity",
     "capabilities": ["Read", "Write"],
-    "defaultPrompt": [
-      "$mineprogress init",
-      "$mineprogress check",
-      "$mineprogress update"
-    ],
+    "defaultPrompt": "Use $mineprogress:init to configure a Project, then use the command-specific Mineprogress Skills.",
     "brandColor": "#24292F"
   }
 }

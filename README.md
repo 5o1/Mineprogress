@@ -8,7 +8,7 @@ Install the plugin, start a new Codex thread, and run the guided initializer. Mi
 active GitHub CLI login automatically:
 
 ```text
-$mineprogress init
+$mineprogress:init
 ```
 
 The guide asks for a GitHub Project URL and default repository, previews detected fields, statuses,
@@ -18,10 +18,10 @@ directory. No configuration file is added to the working repository.
 Mineprogress uses an explicit Codex Skill command:
 
 ```text
-$mineprogress create "Implement import validation"
-$mineprogress bind PVTI_lADO...
-$mineprogress check
-$mineprogress status
+$mineprogress:create "Implement import validation"
+$mineprogress:bind PVTI_lADO...
+$mineprogress:check
+$mineprogress:status
 ```
 
 - `create` follows the Project/repository visibility rules, creates a draft or issue, and binds it.

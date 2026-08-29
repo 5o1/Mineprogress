@@ -10,8 +10,8 @@ npm run ci
 
 Tests use Node's built-in `node:test` and cover thread isolation, incremental checkpoints, dynamic
 statuses, all four visibility routes, issue-to-Project insertion, static review checks, error
-redaction, and Stop loop prevention. `validate` checks manifest/package versions, hook paths, the
-explicit Skill policy, and required resources.
+redaction, and Stop loop prevention. `validate` checks manifest/package versions, hook paths,
+command-Skill discovery size, explicit invocation policy, and required resources.
 
 ## GitHub Actions
 
@@ -24,5 +24,5 @@ archive with `git archive`, and uses GitHub CLI to create or update the matching
 or mismatched tag skips publication.
 
 Advance semver when a version is ready for formal release. For example, manifest and package version
-`0.3.1` require tag `v0.3.1`. Push main and its annotated tag atomically so the tag is available when
+`0.4.0` require tag `v0.4.0`. Push main and its annotated tag atomically so the tag is available when
 the successful CI completion triggers Release.

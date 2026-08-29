@@ -1,0 +1,6 @@
+interface:
+  display_name: "Mineprogress: Init"
+  short_description: "Configure a GitHub Project safely"
+  default_prompt: "Use $mineprogress:init to configure a GitHub Project."
+policy:
+  allow_implicit_invocation: false

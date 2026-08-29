@@ -1,0 +1,6 @@
+interface:
+  display_name: "Mineprogress: Check"
+  short_description: "Suggest candidate binding changes"
+  default_prompt: "Use $mineprogress:check to compare this thread with the configured Project."
+policy:
+  allow_implicit_invocation: false

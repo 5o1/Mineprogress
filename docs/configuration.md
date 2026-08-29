@@ -2,7 +2,7 @@
 
 Mineprogress requires Node.js 22+ and has no npm runtime dependencies. It first reuses the active
 `gh auth login` session and falls back to `GITHUB_TOKEN` or `GH_TOKEN`. Tokens stay in memory and are
-never written to configuration or logs. Then run `$mineprogress init`. The guide requests a Project
+never written to configuration or logs. Then run `$mineprogress:init`. The guide requests a Project
 URL and optional default repository, previews the detected configuration, asks for confirmation, and
 writes `PLUGIN_DATA/config.json`. It can create a missing `Update` text field after confirmation, but
 it will not invent a missing Status field.

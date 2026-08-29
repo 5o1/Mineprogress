@@ -1,0 +1,6 @@
+interface:
+  display_name: "Mineprogress: Status"
+  short_description: "Show cached status and unresolved errors"
+  default_prompt: "Use $mineprogress:status to show the current thread's Mineprogress status."
+policy:
+  allow_implicit_invocation: false

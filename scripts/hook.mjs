@@ -42,7 +42,7 @@ async function sessionStart(dataDir, input) {
   const { state, restored } = await openSession(dataDir, sessionId);
   let initialized = true;
   try { await fs.access(configPath(process.env, ROOT, dataDir)); } catch { initialized = false; }
-  console.log(`Mineprogress ${restored ? 'restored' : 'created'} thread cache for session_id=${sessionId}, data_dir=${dataDir}. ${state.boundItems.length} item(s) bound. ${initialized ? 'Configuration is available.' : 'Run $mineprogress init to configure the plugin.'} Project data is loaded only by explicit commands or update.`);
+  console.log(`Mineprogress ${restored ? 'restored' : 'created'} thread cache for session_id=${sessionId}, data_dir=${dataDir}. ${state.boundItems.length} item(s) bound. ${initialized ? 'Configuration is available.' : 'Run $mineprogress:init to configure the plugin.'} Project data is loaded only by explicit commands or update.`);
 }
 
 async function userPrompt(dataDir, input) {

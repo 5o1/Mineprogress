@@ -1,0 +1,6 @@
+interface:
+  display_name: "Mineprogress: Bind"
+  short_description: "Bind an item to this thread"
+  default_prompt: "Use $mineprogress:bind to bind this Project item to the current thread."
+policy:
+  allow_implicit_invocation: false
