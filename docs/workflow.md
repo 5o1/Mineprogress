@@ -2,9 +2,10 @@
 
 ## Thread lifecycle
 
-SessionStart only creates or restores cache under Codex's `PLUGIN_DATA`; it does not query GitHub.
-Stable user and assistant turn fields form an incremental journal. SessionEnd retains state for a
-later resume. No runtime file is written to the working repository:
+Lifecycle hooks stay silent before initialization and in threads with no bound items. An explicit
+Mineprogress command is the only exception, allowing initialization or the first binding. Once a
+binding exists, stable user and assistant turn fields form an incremental journal. SessionEnd retains
+state for a later resume. No hook queries GitHub, and no runtime file is written to the repository:
 
 - `threads/<session-hash>.json`: bindings, journal, successful checkpoint, and recoverable update.
 - `cache/project-metadata.json`: Project-wide statuses and visibility route shared by all threads.

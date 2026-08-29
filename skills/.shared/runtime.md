@@ -1,7 +1,8 @@
 # Shared Runtime
 
-Resolve the plugin root as two directories above the current Skill directory. Read the SessionStart
-context for `session_id` and `data_dir`; never guess either value. Invoke stateful commands as:
+Resolve the plugin root as two directories above the current Skill directory. Read the Mineprogress
+context attached to the explicit command for `session_id` and `data_dir`; never guess either value.
+Idle lifecycle hooks are silent until initialization and a binding exist. Invoke stateful commands as:
 
 ```text
 node <plugin-root>/scripts/mineprogress.mjs <command> --session <session_id> --data-dir <data_dir>

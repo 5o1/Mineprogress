@@ -8,13 +8,13 @@ import {
   appendJournal,
   authorizeCommand,
   beginUpdate,
-  completeUpdate,
   controlCommandAction,
   isControlPrompt,
   isControlTurn,
   markControlTurn,
   openSession,
   pruneStaleStates,
+  readState,
   requireDataDir,
   writeState
 } from './lib/state.mjs';
@@ -32,27 +32,50 @@ function sessionIdOf(input) {
   return input.session_id || input.sessionId;
 }
 
+async function isInitialized(dataDir) {
+  try {
+    await fs.access(configPath(process.env, ROOT, dataDir));
+    return true;
+  } catch (error) {
+    if (error.code === 'ENOENT') return false;
+    throw error;
+  }
+}
+
 async function sessionStart(dataDir, input) {
   const sessionId = sessionIdOf(input);
+  if (!await isInitialized(dataDir)) return;
+  const state = await readState(dataDir, sessionId);
+  if (!state?.boundItems.length) return;
   const configuredRetention = Number(process.env.MINEPROGRESS_STATE_RETENTION_DAYS || 30);
   await pruneStaleStates(dataDir, {
     retentionDays: Number.isFinite(configuredRetention) && configuredRetention > 0 ? configuredRetention : 30,
     keepSessionId: sessionId
   });
-  const { state, restored } = await openSession(dataDir, sessionId);
-  let initialized = true;
-  try { await fs.access(configPath(process.env, ROOT, dataDir)); } catch { initialized = false; }
-  console.log(`Mineprogress ${restored ? 'restored' : 'created'} thread cache for session_id=${sessionId}, data_dir=${dataDir}. ${state.boundItems.length} item(s) bound. ${initialized ? 'Configuration is available.' : 'Run $mineprogress:init to configure the plugin.'} Project data is loaded only by explicit commands or update.`);
+  console.log(`Mineprogress restored thread cache for session_id=${sessionId}, data_dir=${dataDir}. ${state.boundItems.length} item(s) bound. Project data is loaded only by explicit commands or update.`);
 }
 
 async function userPrompt(dataDir, input) {
   const sessionId = sessionIdOf(input);
-  const { state } = await openSession(dataDir, sessionId);
   const prompt = input.prompt || input.user_prompt || '';
   const control = isControlPrompt(prompt);
+  const action = controlCommandAction(prompt);
+  const initialized = await isInitialized(dataDir);
+  let state = await readState(dataDir, sessionId);
+  if (!control && (!initialized || !state?.boundItems.length)) return;
+  if (control && action === 'init') {
+    console.log(JSON.stringify({
+      hookSpecificOutput: {
+        hookEventName: 'UserPromptSubmit',
+        additionalContext: `Mineprogress initialization is explicitly user-triggered for session_id=${sessionId}, data_dir=${dataDir}. Pass data_dir to the mineprogress CLI.`
+      }
+    }));
+    return;
+  }
+  if (control && !state) ({ state } = await openSession(dataDir, sessionId));
   if (control) {
     markControlTurn(state, input.turn_id);
-    authorizeCommand(state, controlCommandAction(prompt), input.turn_id);
+    authorizeCommand(state, action, input.turn_id);
   }
   appendJournal(state, { kind: 'user', turnId: input.turn_id, text: prompt, control });
   await writeState(dataDir, state);
@@ -68,8 +91,10 @@ async function userPrompt(dataDir, input) {
 
 async function stop(dataDir, input) {
   const sessionId = sessionIdOf(input);
-  const { state } = await openSession(dataDir, sessionId);
   if (input.stop_hook_active) return;
+  if (!await isInitialized(dataDir)) return;
+  const state = await readState(dataDir, sessionId);
+  if (!state?.boundItems.length) return;
   appendJournal(state, {
     kind: 'assistant',
     turnId: input.turn_id,
@@ -85,11 +110,6 @@ async function stop(dataDir, input) {
     await writeState(dataDir, state);
     return;
   }
-  if (!state.boundItems.length) {
-    completeUpdate(state, run.runId);
-    await writeState(dataDir, state);
-    return;
-  }
   await writeState(dataDir, state);
   console.log(JSON.stringify({
     decision: 'block',
@@ -99,7 +119,9 @@ async function stop(dataDir, input) {
 
 async function sessionEnd(dataDir, input) {
   const sessionId = sessionIdOf(input);
-  const { state } = await openSession(dataDir, sessionId);
+  if (!await isInitialized(dataDir)) return;
+  const state = await readState(dataDir, sessionId);
+  if (!state?.boundItems.length) return;
   state.lastEndedAt = new Date().toISOString();
   await writeState(dataDir, state);
 }
