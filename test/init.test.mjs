@@ -6,6 +6,14 @@ import path from 'node:path';
 import { parseProjectUrl, resolveInitializationRepository } from '../scripts/mineprogress.mjs';
 import { run } from '../scripts/mineprogress.mjs';
 import { readProjectMetadata } from '../scripts/lib/metadata.mjs';
+import { detectTerminalStatuses, selectDefaultStatus } from '../scripts/lib/config.mjs';
+
+test('Kanban defaults prefer a starting status and detect conventional terminal statuses', () => {
+  const statuses = ['In progress', 'Todo', 'In review', 'Done'];
+  assert.equal(selectDefaultStatus(statuses), 'Todo');
+  assert.deepEqual(detectTerminalStatuses(statuses), ['Done']);
+  assert.equal(selectDefaultStatus(['Doing', 'Shipped']), 'Doing');
+});
 
 test('guided initialization parses user and organization Project URLs', () => {
   assert.deepEqual(parseProjectUrl('https://github.com/users/octocat/projects/12/views/1'), {
@@ -64,7 +72,11 @@ test('initialization writes config and global metadata without a preview phase',
       data = { user: { projectV2: {
         id: 'PVT_1', title: 'Tasks', public: false,
         repositories: { totalCount: 1, nodes: [{ nameWithOwner: 'octocat/todos', visibility: 'PUBLIC' }] },
-        fields: { nodes: [{ id: 'status', name: 'Status', options: [{ id: 'doing', name: 'Doing' }] }] },
+        fields: { nodes: [{ id: 'status', name: 'Status', options: [
+          { id: 'doing', name: 'Doing' },
+          { id: 'todo', name: 'Todo' },
+          { id: 'done', name: 'Done' }
+        ] }] },
         items: { pageInfo: { hasNextPage: false, endCursor: null }, nodes: [] }
       } }, organization: null };
     } else if (query.includes('repository(owner')) {
@@ -91,8 +103,12 @@ test('initialization writes config and global metadata without a preview phase',
   assert.equal(result.updateFieldCreated, true);
   const saved = JSON.parse(await fs.readFile(path.join(dataDir, 'config.json'), 'utf8'));
   assert.equal(saved.owner, 'octocat');
+  assert.equal(saved.kanban.defaultStatus, 'Todo');
+  assert.deepEqual(saved.kanban.terminalStatuses, ['Done']);
+  assert.equal(result.defaultStatus, 'Todo');
+  assert.equal(result.defaultStatusSource, 'detected');
   const metadata = await readProjectMetadata(dataDir, saved);
-  assert.deepEqual(metadata.availableStatuses, ['Doing']);
+  assert.deepEqual(metadata.availableStatuses, ['Doing', 'Todo', 'Done']);
   assert.equal(metadata.creationPolicy.route, 'draft');
 });
 

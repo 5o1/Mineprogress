@@ -1,7 +1,7 @@
 import crypto from 'node:crypto';
 import fs from 'node:fs/promises';
 import path from 'node:path';
-import process from 'node:process';
+import { atomicWriteFile } from './atomic-file.mjs';
 
 const METADATA_VERSION = 1;
 
@@ -38,9 +38,6 @@ export async function updateProjectMetadata(dataDir, config, patch) {
     checkedAt: new Date().toISOString()
   };
   const file = metadataPath(dataDir);
-  await fs.mkdir(path.dirname(file), { recursive: true });
-  const temporary = `${file}.${process.pid}.tmp`;
-  await fs.writeFile(temporary, `${JSON.stringify(all, null, 2)}\n`, { encoding: 'utf8', mode: 0o600 });
-  await fs.rename(temporary, file);
+  await atomicWriteFile(file, `${JSON.stringify(all, null, 2)}\n`);
   return all.projects[key];
 }

@@ -6,7 +6,8 @@
   "statusFieldName": "Status",
   "updateFieldName": "Update",
   "kanban": {
-    "terminalStatuses": []
+    "defaultStatus": "Todo",
+    "terminalStatuses": ["Done"]
   },
   "creation": {
     "projectVisibility": "auto",

@@ -54,7 +54,7 @@ const PROJECT_FRAGMENT = `fragment ProjectData on ProjectV2 {
       content {
         __typename
         ... on DraftIssue { id title body }
-        ... on Issue { id title number url body repository { nameWithOwner } }
+        ... on Issue { id title number url body state repository { nameWithOwner } }
         ... on PullRequest { id title number url body repository { nameWithOwner } }
       }
       fieldValues(first:20) { nodes {
@@ -89,6 +89,7 @@ export function normalizeProjectItem(item, config) {
     title: item.content?.title || '(untitled draft)',
     contentId: item.content?.id || null,
     contentType,
+    contentState: contentType === 'issue' ? item.content?.state || null : null,
     body: item.content?.body || '',
     url: item.content?.url || null,
     repository: item.content?.repository?.nameWithOwner || null,
@@ -102,6 +103,33 @@ export function projectStatusOptions(project, config) {
   const field = (project.fields?.nodes || []).find(candidate => candidate.name === config.statusFieldName);
   if (!field) throw infrastructureError(`Project field not found: ${config.statusFieldName}`, 'PROJECT_FIELD_MISSING');
   return (field.options || []).map(option => ({ id: option.id, name: option.name }));
+}
+
+function statusOption(project, config, status) {
+  const field = (project.fields?.nodes || []).find(candidate => candidate.name === config.statusFieldName);
+  if (!field) throw infrastructureError(`Project field not found: ${config.statusFieldName}`, 'PROJECT_FIELD_MISSING');
+  const option = field.options?.find(candidate => candidate.name === status);
+  if (!option) throw infrastructureError(`Status option not found: ${status}`, 'PROJECT_STATUS_OPTION_MISSING');
+  return { field, option };
+}
+
+export async function setProjectItemStatus(config, client, project, itemId, status) {
+  const { field, option } = statusOption(project, config, status);
+  const mutation = `mutation($projectId:ID!, $itemId:ID!, $fieldId:ID!, $value:ProjectV2FieldValue!) {
+    updateProjectV2ItemFieldValue(input:{projectId:$projectId,itemId:$itemId,fieldId:$fieldId,value:$value}) {
+      projectV2Item { id }
+    }
+  }`;
+  const data = await client(mutation, {
+    projectId: project.id,
+    itemId,
+    fieldId: field.id,
+    value: { singleSelectOptionId: option.id }
+  });
+  if (!data.updateProjectV2ItemFieldValue?.projectV2Item?.id) {
+    throw infrastructureError('GitHub did not confirm the default Project status.', 'GH_RESPONSE_INVALID');
+  }
+  return status;
 }
 
 export async function createTextField(client, projectId, name) {
@@ -190,6 +218,11 @@ export async function createKanbanItem(config, client, title, body = '') {
   if (!normalizedTitle) throw Object.assign(new Error('A non-empty title is required.'), { code: 'CREATE_TITLE_REQUIRED' });
   if ([...normalizedTitle].length > 256) throw Object.assign(new Error('Title must not exceed 256 characters.'), { code: 'CREATE_TITLE_INVALID' });
   const project = await readProject(config, client);
+  const defaultStatus = config.kanban?.defaultStatus;
+  if (!defaultStatus) {
+    throw infrastructureError('kanban.defaultStatus is missing; rerun Mineprogress init.', 'PROJECT_DEFAULT_STATUS_REQUIRED');
+  }
+  statusOption(project, config, defaultStatus);
   const policy = await inspectCreationPolicy(config, client, project);
   if (policy.route === 'draft') {
     const mutation = `mutation($projectId:ID!, $title:String!, $body:String!) {
@@ -198,7 +231,8 @@ export async function createKanbanItem(config, client, title, body = '') {
     const data = await client(mutation, { projectId: project.id, title: normalizedTitle, body: String(body || '') });
     const itemId = data.addProjectV2DraftIssue?.projectItem?.id;
     if (!itemId) throw infrastructureError('GitHub did not return the created draft item id.', 'GH_RESPONSE_INVALID');
-    return { itemId, title: normalizedTitle, kind: 'draft', policy };
+    await setProjectItemStatus(config, client, project, itemId, defaultStatus);
+    return { itemId, title: normalizedTitle, kind: 'draft', contentType: 'draft', defaultStatus, policy };
   }
   const createMutation = `mutation($repositoryId:ID!, $title:String!, $body:String!) {
     createIssue(input:{repositoryId:$repositoryId,title:$title,body:$body}) { issue { id number url } }
@@ -212,14 +246,53 @@ export async function createKanbanItem(config, client, title, body = '') {
   const added = await client(addMutation, { projectId: project.id, contentId: issue.id });
   const itemId = added.addProjectV2ItemById?.item?.id;
   if (!itemId) throw infrastructureError(`Issue ${issue.url || issue.number} was created but could not be added to the Project.`, 'PROJECT_ADD_ITEM_FAILED');
+  await setProjectItemStatus(config, client, project, itemId, defaultStatus);
   return {
     itemId,
     title: normalizedTitle,
     kind: 'issue',
+    contentId: issue.id,
+    contentType: 'issue',
+    contentState: 'OPEN',
     issueNumber: issue.number,
     issueUrl: issue.url,
+    url: issue.url,
+    repository: config.defaultRepository,
+    defaultStatus,
     policy
   };
+}
+
+async function setIssueState(client, contentId, state) {
+  const mutation = `mutation($id:ID!, $state:IssueState!) {
+    updateIssue(input:{id:$id,state:$state}) { issue { id state } }
+  }`;
+  const data = await client(mutation, { id: contentId, state });
+  if (!data.updateIssue?.issue?.id) throw infrastructureError('GitHub did not confirm the Issue state.', 'GH_RESPONSE_INVALID');
+  return data.updateIssue.issue.state;
+}
+
+export async function deleteKanbanItem(client, project, itemId, fallback = {}) {
+  const item = project.normalizedItems.find(candidate => candidate.itemId === itemId);
+  const target = item || fallback;
+  if (!item && !target.contentId) {
+    throw infrastructureError('Project item is unavailable and no linked content was cached.', 'PROJECT_ITEM_NOT_FOUND');
+  }
+  let issueClosed = false;
+  if (target.contentType === 'issue' && target.contentId && target.contentState !== 'CLOSED') {
+    await setIssueState(client, target.contentId, 'CLOSED');
+    issueClosed = true;
+  }
+  if (item) {
+    const mutation = `mutation($projectId:ID!, $itemId:ID!) {
+      deleteProjectV2Item(input:{projectId:$projectId,itemId:$itemId}) { deletedItemId }
+    }`;
+    const data = await client(mutation, { projectId: project.id, itemId });
+    if (data.deleteProjectV2Item?.deletedItemId !== itemId) {
+      throw infrastructureError('GitHub did not confirm Project item deletion.', 'GH_RESPONSE_INVALID');
+    }
+  }
+  return { itemId, projectItemDeleted: Boolean(item), issueClosed };
 }
 
 function projectFields(project) {
@@ -242,10 +315,7 @@ export function prepareUpdateOperations(config, project, plan) {
   for (const update of plan.updates) {
     const item = items.get(update.itemId);
     if (update.status) {
-      const field = fields.get(config.statusFieldName);
-      if (!field) throw infrastructureError(`Project field not found: ${config.statusFieldName}`, 'PROJECT_FIELD_MISSING');
-      const option = field.options?.find(candidate => candidate.name === update.status);
-      if (!option) throw infrastructureError(`Status option not found: ${update.status}`, 'PROJECT_STATUS_OPTION_MISSING');
+      const { field, option } = statusOption(project, config, update.status);
       if (item?.status !== update.status) operations.push({
         key: operationKey(update, 'status', update.status),
         kind: 'status',
@@ -255,6 +325,20 @@ export function prepareUpdateOperations(config, project, plan) {
         expected: update.status,
         value: { singleSelectOptionId: option.id }
       });
+      if (item?.contentType === 'issue' && item.contentId && item.contentState) {
+        const terminal = config.kanban?.terminalStatuses?.includes(update.status);
+        const expected = terminal ? 'CLOSED' : 'OPEN';
+        if (item.contentState !== expected) operations.push({
+          key: operationKey(update, 'issue-state', expected),
+          kind: 'issueState',
+          itemId: update.itemId,
+          contentId: item.contentId,
+          contentType: item.contentType,
+          before: item.contentState,
+          expected,
+          value: { state: expected }
+        });
+      }
     }
     if (update.summary) {
       const field = fields.get(config.updateFieldName);
@@ -345,7 +429,8 @@ export async function reconcilePreparedOperations(project, operations, { client 
     }
     const actual = operation.kind === 'status' ? item.status
       : operation.kind === 'summary' ? item.summary
-        : operation.kind === 'body' ? item.body : undefined;
+        : operation.kind === 'body' ? item.body
+          : operation.kind === 'issueState' ? item.contentState : undefined;
     if (actual === operation.expected) confirmed.push(operation);
     else if (actual === operation.before) retryable.push(operation);
     else conflicts.push({ operation, actual, reason: 'Field changed after the plan was prepared.' });
@@ -366,6 +451,11 @@ export async function applyPreparedOperations(client, projectId, operations) {
       variables[`fieldId${index}`] = operation.fieldId;
       variables[`value${index}`] = operation.value;
       selections.push(`operation${index}:updateProjectV2ItemFieldValue(input:{projectId:$projectId,itemId:$itemId${index},fieldId:$fieldId${index},value:$value${index}}) { projectV2Item { id } }`);
+    } else if (operation.kind === 'issueState') {
+      definitions.push(`$contentId${index}:ID!`, `$state${index}:IssueState!`);
+      variables[`contentId${index}`] = operation.contentId;
+      variables[`state${index}`] = operation.value.state;
+      selections.push(`operation${index}:updateIssue(input:{id:$contentId${index},state:$state${index}}) { issue { id state } }`);
     } else {
       definitions.push(`$contentId${index}:ID!`, `$body${index}:String!`);
       variables[`contentId${index}`] = operation.contentId;

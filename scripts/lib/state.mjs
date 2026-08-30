@@ -2,6 +2,7 @@ import crypto from 'node:crypto';
 import fs from 'node:fs/promises';
 import path from 'node:path';
 import process from 'node:process';
+import { atomicWriteFile } from './atomic-file.mjs';
 
 const STATE_VERSION = 1;
 const PLAN_FORMAT_VERSION = 3;
@@ -48,6 +49,10 @@ function normalizeState(state) {
   for (const item of state.boundItems || []) {
     item.bindingSource ||= 'bind';
     item.backfillRevision ??= 1;
+    item.contentId ??= null;
+    item.contentType ??= null;
+    item.url ??= null;
+    item.repository ??= null;
   }
   state.lastPlannedUpdate ??= state.lastSuccessfulUpdate || null;
   state.pendingPlan ??= null;
@@ -90,11 +95,8 @@ export async function readState(dataDir, sessionId) {
 
 export async function writeState(dataDir, state) {
   const file = statePath(dataDir, state.sessionId);
-  await fs.mkdir(path.dirname(file), { recursive: true });
   state.updatedAt = new Date().toISOString();
-  const temporary = `${file}.${process.pid}.tmp`;
-  await fs.writeFile(temporary, `${JSON.stringify(state, null, 2)}\n`, { encoding: 'utf8', mode: 0o600 });
-  await fs.rename(temporary, file);
+  await atomicWriteFile(file, `${JSON.stringify(state, null, 2)}\n`);
   return state;
 }
 
@@ -179,6 +181,10 @@ export function bindItem(state, item, { source = 'bind' } = {}) {
   state.boundItems.push({
     itemId: item.itemId,
     title: item.title || null,
+    contentId: item.contentId || null,
+    contentType: item.contentType || item.kind || null,
+    url: item.url || item.issueUrl || null,
+    repository: item.repository || null,
     bindingSource: source,
     backfillRevision,
     boundAt: new Date().toISOString()

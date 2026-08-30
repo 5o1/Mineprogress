@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { applyPreparedOperations, applyUpdatePlan, createDraftItem, createKanbanItem, createTextField, makeClient, normalizeProjectItem, prepareUpdateOperations, readProject, reconcilePreparedOperations, selectCreationRoute } from '../scripts/lib/github-projects.mjs';
+import { applyPreparedOperations, applyUpdatePlan, createDraftItem, createKanbanItem, createTextField, deleteKanbanItem, makeClient, normalizeProjectItem, prepareUpdateOperations, readProject, reconcilePreparedOperations, selectCreationRoute } from '../scripts/lib/github-projects.mjs';
 
 const config = {
   owner: 'octocat',
@@ -8,6 +8,7 @@ const config = {
   projectNumber: 1,
   statusFieldName: 'Status',
   updateFieldName: 'Update',
+  kanban: { defaultStatus: 'Todo', terminalStatuses: ['Done'] },
   defaultRepository: 'octocat/todos',
   creation: {
     projectVisibility: 'auto',
@@ -29,7 +30,10 @@ function projectPage({ hasNextPage = false, endCursor = null } = {}) {
         public: false,
         repositories: { totalCount: 1, nodes: [{ nameWithOwner: 'octocat/todos', visibility: 'PUBLIC' }] },
         fields: { nodes: [
-          { id: 'status-field', name: 'Status', options: [{ id: 'done-option', name: 'Done' }] },
+          { id: 'status-field', name: 'Status', options: [
+            { id: 'todo-option', name: 'Todo' },
+            { id: 'done-option', name: 'Done' }
+          ] },
           { id: 'update-field', name: 'Update' }
         ] },
         items: { pageInfo: { hasNextPage, endCursor }, nodes: [] }
@@ -48,14 +52,14 @@ test('project items normalize configured fields', () => {
   const item = normalizeProjectItem({
     id: 'PVTI_1',
     isArchived: false,
-    content: { __typename: 'Issue', id: 'I_1', title: 'Ship', body: 'Existing body', url: 'https://example.test/1' },
+    content: { __typename: 'Issue', id: 'I_1', title: 'Ship', body: 'Existing body', state: 'OPEN', url: 'https://example.test/1' },
     fieldValues: { nodes: [
       { name: 'In progress', field: { name: 'Status' } },
       { text: 'Tests added', field: { name: 'Update' } }
     ] }
   }, config);
   assert.deepEqual(item, {
-    itemId: 'PVTI_1', title: 'Ship', contentId: 'I_1', contentType: 'issue', body: 'Existing body',
+    itemId: 'PVTI_1', title: 'Ship', contentId: 'I_1', contentType: 'issue', contentState: 'OPEN', body: 'Existing body',
     url: 'https://example.test/1', repository: null, archived: false, status: 'In progress', summary: 'Tests added'
   });
 });
@@ -210,12 +214,15 @@ test('public repository issue creation adds the issue to the Project', async () 
     if (query.includes('repository(owner')) return { repository: { id: 'R_1', nameWithOwner: 'octocat/todos', visibility: 'PUBLIC' } };
     if (query.includes('createIssue')) return { createIssue: { issue: { id: 'I_1', number: 7, url: 'https://example.test/7' } } };
     if (query.includes('addProjectV2ItemById')) return { addProjectV2ItemById: { item: { id: 'PVTI_7' } } };
+    if (query.includes('updateProjectV2ItemFieldValue')) return { updateProjectV2ItemFieldValue: { projectV2Item: { id: 'PVTI_7' } } };
     throw new Error(`Unexpected query with ${JSON.stringify(variables)}`);
   };
   const item = await createKanbanItem(publicConfig, client, 'Public task', 'Initial body');
   assert.equal(item.kind, 'issue');
   assert.equal(item.itemId, 'PVTI_7');
   assert.equal(calls.some(query => query.includes('addProjectV2ItemById')), true);
+  assert.equal(item.defaultStatus, 'Todo');
+  assert.equal(inputs.find(input => input?.value?.singleSelectOptionId)?.value.singleSelectOptionId, 'todo-option');
   assert.equal(inputs.find(input => input?.repositoryId)?.body, 'Initial body');
 });
 
@@ -226,13 +233,75 @@ test('private Project with public repository creates a draft through projectItem
     if (query.includes('query($login')) return projectPage();
     if (query.includes('repository(owner')) return { repository: { id: 'R_1', nameWithOwner: 'octocat/todos', visibility: 'PUBLIC' } };
     if (query.includes('addProjectV2DraftIssue')) return { addProjectV2DraftIssue: { projectItem: { id: 'PVTI_DRAFT' } } };
+    if (query.includes('updateProjectV2ItemFieldValue')) return { updateProjectV2ItemFieldValue: { projectV2Item: { id: 'PVTI_DRAFT' } } };
     throw new Error('Unexpected query');
   };
   const item = await createKanbanItem(config, client, 'Private task');
   assert.equal(item.kind, 'draft');
   assert.equal(item.itemId, 'PVTI_DRAFT');
+  assert.equal(item.defaultStatus, 'Todo');
   assert.match(calls.find(query => query.includes('addProjectV2DraftIssue')), /projectItem \{ id \}/);
-  assert.equal(calls.some(query => query.includes('projectV2Item')), false);
+  assert.equal(calls.filter(query => query.includes('updateProjectV2ItemFieldValue')).length, 1);
+});
+
+test('terminal and active status updates synchronize linked Issue state', async () => {
+  const project = {
+    id: 'PVT_1',
+    fields: projectPage().user.projectV2.fields,
+    normalizedItems: [{
+      itemId: 'PVTI_1', contentId: 'I_1', contentType: 'issue', contentState: 'OPEN',
+      status: 'Todo', summary: null, body: ''
+    }]
+  };
+  const closing = prepareUpdateOperations(config, project, { updates: [{ itemId: 'PVTI_1', status: 'Done' }] });
+  assert.deepEqual(closing.operations.map(operation => operation.kind), ['status', 'issueState']);
+  assert.equal(closing.operations[1].expected, 'CLOSED');
+  await applyPreparedOperations(async (query, variables) => {
+    assert.match(query, /operation0:updateProjectV2ItemFieldValue/);
+    assert.match(query, /operation1:updateIssue/);
+    assert.equal(variables.state1, 'CLOSED');
+    return {
+      operation0: { projectV2Item: { id: 'PVTI_1' } },
+      operation1: { issue: { id: 'I_1', state: 'CLOSED' } }
+    };
+  }, project.id, closing.operations);
+  project.normalizedItems[0].contentState = 'CLOSED';
+  project.normalizedItems[0].status = 'Done';
+  const reopening = prepareUpdateOperations(config, project, { updates: [{ itemId: 'PVTI_1', status: 'Todo' }] });
+  assert.deepEqual(reopening.operations.map(operation => operation.kind), ['status', 'issueState']);
+  assert.equal(reopening.operations[1].expected, 'OPEN');
+});
+
+test('explicit Project item deletion closes its Issue first', async () => {
+  const project = {
+    id: 'PVT_1',
+    normalizedItems: [{ itemId: 'PVTI_1', contentId: 'I_1', contentType: 'issue', contentState: 'OPEN' }]
+  };
+  const calls = [];
+  const result = await deleteKanbanItem(async (query, variables) => {
+    calls.push({ query, variables });
+    if (query.includes('updateIssue')) return { updateIssue: { issue: { id: 'I_1', state: 'CLOSED' } } };
+    if (query.includes('deleteProjectV2Item')) return { deleteProjectV2Item: { deletedItemId: 'PVTI_1' } };
+    throw new Error('Unexpected mutation');
+  }, project, 'PVTI_1');
+  assert.deepEqual(result, { itemId: 'PVTI_1', projectItemDeleted: true, issueClosed: true });
+  assert.match(calls[0].query, /updateIssue/);
+  assert.match(calls[1].query, /deleteProjectV2Item/);
+});
+
+test('explicit deletion still closes a cached Issue when its Project item is already gone', async () => {
+  const calls = [];
+  const result = await deleteKanbanItem(async (query, variables) => {
+    calls.push({ query, variables });
+    if (query.includes('updateIssue')) return { updateIssue: { issue: { id: 'I_2', state: 'CLOSED' } } };
+    throw new Error('Unexpected mutation');
+  }, { id: 'PVT_1', normalizedItems: [] }, 'PVTI_2', {
+    contentId: 'I_2',
+    contentType: 'issue'
+  });
+  assert.deepEqual(result, { itemId: 'PVTI_2', projectItemDeleted: false, issueClosed: true });
+  assert.equal(calls.length, 1);
+  assert.match(calls[0].query, /updateIssue/);
 });
 
 test('guided initialization can create the configured update text field', async () => {

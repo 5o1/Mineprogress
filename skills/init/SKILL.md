@@ -15,7 +15,8 @@ node <plugin-root>/scripts/mineprogress.mjs init --project-url <url> --data-dir 
 
 The CLI uses the Project's sole linked repository, creates a missing `Update` text field, and saves
 configuration immediately. On `initialized`, report the Project, repository, visibility, creation
-route, statuses, and whether the field was created. Do not ask for confirmation.
+route, available statuses, detected default and terminal statuses, and whether the field was
+created. Do not ask for confirmation.
 
 If it returns `repository_selection_required`, present only its repository candidates and ask the
 user to choose one. Rerun init with `--repository <owner/name>`, or use `--no-repository` only when

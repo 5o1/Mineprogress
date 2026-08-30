@@ -194,7 +194,7 @@ async function runHook() {
   const dataDir = requireDataDir();
   const sessionId = input.session_id || input.sessionId;
   if (!sessionId) return;
-  const state = await readState(dataDir, sessionId);
+  const state = await withSessionLock(dataDir, sessionId, () => readState(dataDir, sessionId));
   if (!state?.boundItems.length || state.pendingPlan?.attempts?.length) return;
   await runBackgroundUpdate(dataDir, sessionId);
 }

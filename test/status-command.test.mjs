@@ -16,7 +16,8 @@ test('status is offline and reports global route and discovered statuses as sepa
     projectNumber: 1,
     defaultRepository: 'octocat/todos',
     statusFieldName: 'Status',
-    updateFieldName: 'Update'
+    updateFieldName: 'Update',
+    kanban: { defaultStatus: 'Backlog', terminalStatuses: ['Shipped'] }
   };
   await fs.writeFile(configFile, JSON.stringify(config));
   await updateProjectMetadata(directory, config, {
@@ -29,5 +30,6 @@ test('status is offline and reports global route and discovered statuses as sepa
   const result = await run(['status', '--session', 's1', '--data-dir', directory]);
   assert.equal(result.creationPolicyLine, 'Creation route: Project private, repository public -> draft.');
   assert.equal(result.kanbanStatusLine, 'Kanban statuses: Backlog, Doing, Shipped.');
+  assert.equal(result.kanbanPolicyLine, 'Kanban policy: default Backlog; terminal Shipped.');
   assert.equal(result.unresolvedCount, 0);
 });

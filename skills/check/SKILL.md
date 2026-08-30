@@ -11,5 +11,6 @@ Read [the shared runtime contract](../.shared/runtime.md), then run:
 node <plugin-root>/scripts/mineprogress.mjs check --session <session_id> --data-dir <data_dir>
 ```
 
-Show `suggestedAdd` and `suggestedRemove`, and report the discovered Kanban statuses. This command is
+Show `suggestedAdd` and `suggestedRemove`, and report the discovered statuses plus the configured
+default and terminal statuses. This command is
 read-only: never bind or unbind an item, and never advance the update checkpoint.

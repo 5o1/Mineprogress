@@ -21,6 +21,11 @@ configuration. `config.example.json` documents the complete schema; users do not
 - `projectNumber`: the number shown in the Project URL.
 - `defaultRepository`: repository selected from the Project's linked repositories, in `owner/name` form.
 - `statusFieldName` / `updateFieldName`: single-select status and concise update text fields.
+- `kanban.defaultStatus`: status assigned immediately to every newly created item. Initialization
+  prefers common starting names such as `Todo` or `Backlog`, then falls back to the first
+  non-terminal option.
+- `kanban.terminalStatuses`: statuses that close linked Issues. Initialization recognizes
+  conventional terminal names such as `Done`, `Completed`, or `Closed`; users can override the list.
 - `update.maxBodyCharacters` / `maxCommentCharacters`: static limits for managed Markdown content.
 
 ## Content contracts
@@ -31,8 +36,10 @@ resources loaded only for an active background update, not global Codex instruct
 body format uses `Historical Progress` with chronological Requirements/Results segments.
 
 `check` reads the real options from the Status field and saves them in the global plugin cache.
-GitHub does not assign completion semantics to those options, so only names explicitly listed in
-`kanban.terminalStatuses` produce removal suggestions. The empty default makes no assumption.
+Only configured `kanban.terminalStatuses` produce removal suggestions or synchronize linked Issues
+to closed. A Mineprogress update that moves a linked Project item back to a non-terminal status
+reopens its Issue. Direct edits on github.com require a GitHub Project workflow because a local
+plugin cannot receive those remote events.
 
 ## Creation routes
 

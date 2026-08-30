@@ -20,6 +20,11 @@ list. Mutating commands consume a short-lived authorization recorded by UserProm
 cannot create or change bindings on an unrelated turn. Control commands are excluded from later
 update content.
 
+Plain `unbind` changes only the thread candidate list. Explicit `unbind --delete` closes linked
+Issue content, deletes the Project item, and then removes the local binding. Status updates also
+close Issues on configured terminal statuses and reopen them on non-terminal statuses. Archiving a
+Project item does not change Issue state.
+
 ## Automatic update
 
 Stop first persists the turn with a small local command, then launches a separate asynchronous Hook.

@@ -3,13 +3,14 @@ import fs from 'node:fs/promises';
 import path from 'node:path';
 import process from 'node:process';
 import { fileURLToPath } from 'node:url';
-import { configPath, createConfig, loadConfig, saveConfig } from './lib/config.mjs';
+import { configPath, createConfig, detectTerminalStatuses, loadConfig, saveConfig, selectDefaultStatus } from './lib/config.mjs';
 import { resolveGithubToken } from './lib/auth.mjs';
 import { suggestBindings } from './lib/check.mjs';
 import {
   applyPreparedOperations,
   createTextField,
   createKanbanItem,
+  deleteKanbanItem,
   inspectCreationPolicy,
   makeClient,
   prepareUpdateOperations,
@@ -52,7 +53,7 @@ function parseArgs(argv) {
     const value = argv[index];
     if (!value.startsWith('--')) { positional.push(value); continue; }
     const key = value.slice(2);
-    if (['all', 'json', 'confirm', 'no-repository'].includes(key)) flags[key] = true;
+    if (['all', 'delete', 'json', 'confirm', 'no-repository'].includes(key)) flags[key] = true;
     else flags[key] = argv[++index];
   }
   return { positional, flags };
@@ -104,7 +105,8 @@ function initializationConfig(flags) {
     ...parseProjectUrl(flags['project-url']),
     defaultRepository: flags.repository || '',
     statusFieldName: flags['status-field'] || 'Status',
-    updateFieldName: flags['update-field'] || 'Update'
+    updateFieldName: flags['update-field'] || 'Update',
+    kanban: { defaultStatus: flags['default-status'] || '', terminalStatuses: [] }
   });
 }
 
@@ -142,6 +144,18 @@ async function inspectInitialization(dataDir, flags) {
   const statusField = fields.find(field => field.name === config.statusFieldName);
   const updateField = fields.find(field => field.name === config.updateFieldName);
   const availableStatuses = (statusField?.options || []).map(option => option.name);
+  const requestedDefaultStatus = config.kanban.defaultStatus;
+  if (requestedDefaultStatus && !availableStatuses.includes(requestedDefaultStatus)) {
+    throw Object.assign(new Error(`Default status is not available in the Project: ${requestedDefaultStatus}`), { code: 'PROJECT_DEFAULT_STATUS_INVALID' });
+  }
+  config = createConfig({
+    ...config,
+    kanban: {
+      ...config.kanban,
+      defaultStatus: requestedDefaultStatus || selectDefaultStatus(availableStatuses),
+      terminalStatuses: detectTerminalStatuses(availableStatuses)
+    }
+  });
   const creationPolicy = repositorySelection.selectionRequired
     ? null
     : await inspectCreationPolicy(config, client, project);
@@ -149,6 +163,7 @@ async function inspectInitialization(dataDir, flags) {
     config,
     project,
     availableStatuses,
+    defaultStatusSource: requestedDefaultStatus ? 'explicit' : 'detected',
     creationPolicy,
     repositorySelection,
     statusFieldFound: Boolean(statusField),
@@ -175,6 +190,9 @@ async function initCommand(dataDir, flags, positional) {
     repositoryVisibility: inspection.creationPolicy?.repositoryVisibility || null,
     creationRoute: inspection.creationPolicy?.route || null,
     availableStatuses: inspection.availableStatuses,
+    defaultStatus: inspection.config.kanban.defaultStatus || null,
+    defaultStatusSource: inspection.defaultStatusSource,
+    terminalStatuses: inspection.config.kanban.terminalStatuses,
     statusFieldFound: inspection.statusFieldFound,
     configTarget: inspection.configTarget
   };
@@ -240,7 +258,8 @@ async function createCommand(dataDir, flags, positional) {
       issueUrl: item.issueUrl || null,
       route: item.policy.route,
       projectVisibility: item.policy.projectVisibility,
-      repositoryVisibility: item.policy.repositoryVisibility
+      repositoryVisibility: item.policy.repositoryVisibility,
+      defaultStatus: item.defaultStatus
     },
     bound: true
   };
@@ -272,16 +291,26 @@ async function unbindCommand(dataDir, flags, positional) {
   const sessionId = requiredSession(flags);
   const itemId = flags.item || positional[0];
   if (!itemId) throw Object.assign(new Error('Pass --item <Project item id>.'), { code: 'ITEM_ID_REQUIRED' });
+  const initial = await readState(dataDir, sessionId);
+  if (!initial) throw Object.assign(new Error('Thread cache does not exist.'), { code: 'STATE_NOT_FOUND' });
+  requireCommandAuthorization(initial, 'unbind');
+  let deletion = null;
+  if (flags.delete) {
+    const config = await pluginConfig(dataDir);
+    const client = await githubClient();
+    const project = await readProject(config, client);
+    const binding = initial.boundItems.find(item => item.itemId === itemId) || {};
+    deletion = await deleteKanbanItem(client, project, itemId, binding);
+  }
   const changed = await withSessionLock(dataDir, sessionId, async () => {
     const state = await readState(dataDir, sessionId);
-    if (!state) throw Object.assign(new Error('Thread cache does not exist.'), { code: 'STATE_NOT_FOUND' });
     const consumeAuthorization = requireCommandAuthorization(state, 'unbind');
     const unbound = unbindItem(state, itemId);
     consumeAuthorization();
     await writeState(dataDir, state);
     return unbound;
   });
-  return { changed, itemId };
+  return { changed, itemId, deletion };
 }
 
 async function checkCommand(dataDir, flags) {
@@ -304,6 +333,9 @@ async function checkCommand(dataDir, flags) {
   });
   return {
     availableStatuses,
+    defaultStatus: config.kanban.defaultStatus || null,
+    terminalStatuses: config.kanban.terminalStatuses,
+    defaultStatusAvailable: availableStatuses.includes(config.kanban.defaultStatus),
     creationPolicy: {
       projectVisibility: creationPolicy.projectVisibility,
       repositoryVisibility: creationPolicy.repositoryVisibility,
@@ -636,7 +668,11 @@ async function statusCommand(dataDir, flags, positional) {
   const errors = await unresolvedErrors(dataDir, { sessionId, all, limit: Number(flags.limit || 20) });
   const state = sessionId ? await readState(dataDir, sessionId) : null;
   let metadata = null;
-  try { metadata = await readProjectMetadata(dataDir, await pluginConfig(dataDir)); } catch {}
+  let config = null;
+  try {
+    config = await pluginConfig(dataDir);
+    metadata = await readProjectMetadata(dataDir, config);
+  } catch {}
   const policy = metadata?.creationPolicy;
   const creationPolicyLine = policy
     ? `Creation route: Project ${policy.projectVisibility}, repository ${policy.repositoryVisibility || 'not configured'} -> ${policy.route}.`
@@ -644,10 +680,13 @@ async function statusCommand(dataDir, flags, positional) {
   const kanbanStatusLine = metadata?.availableStatuses?.length
     ? `Kanban statuses: ${metadata.availableStatuses.join(', ')}.`
     : 'Kanban statuses: unknown; run check to refresh them.';
+  const kanbanPolicyLine = config?.kanban?.defaultStatus
+    ? `Kanban policy: default ${config.kanban.defaultStatus}; terminal ${config.kanban.terminalStatuses.length ? config.kanban.terminalStatuses.join(', ') : 'none'}.`
+    : 'Kanban policy: default status unknown; rerun init.';
   const pendingPlanLine = state?.pendingPlan
     ? `Pending submission: ${state.pendingPlan.plan.updates.length} item update(s), ${state.pendingPlan.operations.length} write operation(s), ${state.pendingPlan.submissionStatus}.`
     : 'Pending submission: none.';
-  return { scope: all ? 'all sessions' : sessionId, creationPolicyLine, kanbanStatusLine, pendingPlanLine, unresolvedCount: errors.length, errors };
+  return { scope: all ? 'all sessions' : sessionId, creationPolicyLine, kanbanStatusLine, kanbanPolicyLine, pendingPlanLine, unresolvedCount: errors.length, errors };
 }
 
 async function recordErrorCommand(dataDir, flags) {

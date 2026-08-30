@@ -11,7 +11,7 @@ Read [the shared runtime contract](../.shared/runtime.md), then run:
 node <plugin-root>/scripts/mineprogress.mjs status --session <session_id> --data-dir <data_dir>
 ```
 
-Show `creationPolicyLine` and `kanbanStatusLine` on separate lines and only unresolved summaries for
-this session. Use `status --all` only when explicitly requested. For an explicit `resolve <errorId>`
+Show `creationPolicyLine`, `kanbanStatusLine`, and `kanbanPolicyLine` on separate lines, followed by
+only unresolved summaries for this session. Use `status --all` only when explicitly requested. For an explicit `resolve <errorId>`
 invocation, run `status resolve <errorId>`; it appends a resolution event and never rewrites or
 exposes the complete error log.

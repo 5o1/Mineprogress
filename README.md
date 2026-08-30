@@ -21,12 +21,15 @@ Mineprogress uses an explicit Codex Skill command:
 ```text
 $mineprogress:create "Implement import validation"
 $mineprogress:bind PVTI_lADO...
+$mineprogress:unbind PVTI_lADO... --delete
 $mineprogress:check
 $mineprogress:status
 ```
 
 - `create` creates and binds an item, then backfills its long-form Historical Progress from the complete earlier thread.
 - `bind` adds an existing Project item and preserves manual content while adding managed history.
+- `unbind` normally removes only the thread binding; explicit `--delete` also closes a linked Issue
+  and removes the Project item.
 - `check` discovers actual Kanban statuses and suggests items to bind or unbind without changing them.
 - `status` works offline and shows the creation route, available statuses, and unresolved errors.
 

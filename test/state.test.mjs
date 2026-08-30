@@ -157,6 +157,22 @@ test('a binding can start a full-history update without locally journaled contex
   assert.equal(beginUpdate(state), null);
 });
 
+test('bindings retain linked content metadata for explicit synchronized deletion', () => {
+  const state = newStateForTest();
+  bindItem(state, {
+    itemId: 'PVTI_1', title: 'Issue task', contentId: 'I_1', contentType: 'issue',
+    url: 'https://example.test/1', repository: 'octocat/todos'
+  });
+  assert.deepEqual({
+    contentId: state.boundItems[0].contentId,
+    contentType: state.boundItems[0].contentType,
+    url: state.boundItems[0].url,
+    repository: state.boundItems[0].repository
+  }, {
+    contentId: 'I_1', contentType: 'issue', url: 'https://example.test/1', repository: 'octocat/todos'
+  });
+});
+
 test('exhausted updates require an explicit retry', () => {
   const state = newStateForTest();
   appendJournal(state, { kind: 'user', turnId: 't1', text: 'Change' });

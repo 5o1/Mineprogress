@@ -14,3 +14,7 @@ node <plugin-root>/scripts/mineprogress.mjs unbind <itemId> --session <session_i
 
 Report whether the binding was removed. Do not remove bindings merely because `check` recommends
 it; that recommendation still requires this explicit command.
+
+Plain unbind changes only the current thread. If and only if the user explicitly asks to delete the
+Project item, add `--delete`. That path closes linked Issue content first, deletes the Project item,
+then removes the local binding. Never infer deletion from an unbind request.

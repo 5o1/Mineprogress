@@ -12,6 +12,8 @@ Notable user-visible changes are documented here. Entries follow
 - Full-thread backfill for newly bound items, including conversation history from before plugin installation.
 - Managed Issue and Draft bodies with chronological Requirements/Results history and recoverable Issue comments.
 - Separate runtime contracts for create, bind, incremental updates, and reviewer checks.
+- Guided detection of a configurable default Kanban status and conventional terminal statuses.
+- Explicit synchronized deletion that closes linked Issues before removing Project items.
 
 ### Changed
 
@@ -30,3 +32,7 @@ Notable user-visible changes are documented here. Entries follow
   plans with a prior submission attempt remain available for safe reconciliation.
 - Empty incremental results now advance the planning checkpoint while retaining an existing queued
   plan, instead of exhausting review retries or discarding approved content.
+- New items receive the configured default status, while terminal/non-terminal transitions close or
+  reopen linked Issues.
+- State, configuration, and metadata writes retry transient Windows rename contention, and the
+  background Hook now locks its initial state read.

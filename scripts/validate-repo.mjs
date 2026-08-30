@@ -94,6 +94,7 @@ const requiredFiles = [
   'scripts/mineprogress.mjs',
   'scripts/background-update.mjs',
   'scripts/hook.mjs',
+  'scripts/lib/atomic-file.mjs',
   'scripts/lib/errors.mjs',
   'scripts/lib/auth.mjs',
   'scripts/lib/state.mjs'

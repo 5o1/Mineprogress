@@ -1,12 +1,14 @@
 import fs from 'node:fs/promises';
 import path from 'node:path';
 import process from 'node:process';
+import { atomicWriteFile } from './atomic-file.mjs';
 
 export const DEFAULT_CONFIG = {
   ownerType: 'user',
   statusFieldName: 'Status',
   updateFieldName: 'Update',
   kanban: {
+    defaultStatus: '',
     terminalStatuses: []
   },
   defaultRepository: '',
@@ -34,6 +36,41 @@ export const DEFAULT_CONFIG = {
     preferFastMode: true
   }
 };
+
+const DEFAULT_STATUS_PATTERNS = [
+  /^todo$/i,
+  /^to do$/i,
+  /^backlog$/i,
+  /^new$/i,
+  /^not started$/i,
+  /^ready$/i,
+  /^open$/i,
+  /^planned?$/i,
+  /^planning$/i,
+  /^\u5f85\u529e$/u,
+  /^\u672a\u5f00\u59cb$/u
+];
+const TERMINAL_STATUS_PATTERN = /^(?:done|complete|completed|closed|resolved|cancelled|canceled|not planned|won't do|won't fix|\u5df2\u5b8c\u6210|\u5df2\u53d6\u6d88)$/iu;
+
+function statusNames(statuses) {
+  return (statuses || []).map(status => typeof status === 'string' ? status : status?.name)
+    .filter(status => typeof status === 'string' && status.trim())
+    .map(status => status.trim());
+}
+
+export function detectTerminalStatuses(statuses) {
+  return statusNames(statuses).filter(status => TERMINAL_STATUS_PATTERN.test(status));
+}
+
+export function selectDefaultStatus(statuses) {
+  const names = statusNames(statuses);
+  for (const pattern of DEFAULT_STATUS_PATTERNS) {
+    const match = names.find(status => pattern.test(status));
+    if (match) return match;
+  }
+  const terminal = new Set(detectTerminalStatuses(names));
+  return names.find(status => !terminal.has(status)) || names[0] || '';
+}
 
 function mergeConfig(raw) {
   return {
@@ -81,6 +118,9 @@ export async function loadConfig(file = configPath()) {
   if (!Array.isArray(config.kanban.terminalStatuses) || config.kanban.terminalStatuses.some(status => typeof status !== 'string')) {
     throw Object.assign(new Error('kanban.terminalStatuses must be an array of status names'), { code: 'CONFIG_INVALID' });
   }
+  if (typeof config.kanban.defaultStatus !== 'string') {
+    throw Object.assign(new Error('kanban.defaultStatus must be a status name'), { code: 'CONFIG_INVALID' });
+  }
   return config;
 }
 
@@ -89,9 +129,6 @@ export function createConfig(values) {
 }
 
 export async function saveConfig(file, config) {
-  await fs.mkdir(path.dirname(file), { recursive: true });
-  const temporary = `${file}.${process.pid}.tmp`;
-  await fs.writeFile(temporary, `${JSON.stringify(config, null, 2)}\n`, { encoding: 'utf8', mode: 0o600 });
-  await fs.rename(temporary, file);
+  await atomicWriteFile(file, `${JSON.stringify(config, null, 2)}\n`);
   return file;
 }
