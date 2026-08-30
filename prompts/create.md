@@ -7,6 +7,8 @@ messages from before Mineprogress was installed or invoked. Return `itemId`, `st
 
 - Produce the item's one-time academic-style project proposal inside
   `<!-- mineprogress:managed:start -->` and `<!-- mineprogress:managed:end -->`.
+- Do not generate a `## Repository` section. The script inserts the bound primary repository and its
+  description in that location after review.
 - Use these non-empty sections in order: `## Abstract`, `## Background and Significance`,
   `## Problem Statement`, `## Objectives`, `## Scope and Research Questions`,
   `## Methodology and Technical Approach`, `## Expected Deliverables and Evaluation Criteria`,

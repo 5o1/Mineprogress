@@ -88,6 +88,19 @@ test('planning and submission advance separate incremental checkpoints', async t
   const { state } = await openSession(dataDir, 's1');
   assert.equal(bindItem(state, { itemId: 'PVTI_1', title: 'Ship' }), true);
   assert.equal(bindItem(state, { itemId: 'PVTI_1', title: 'Ship' }), false);
+  assert.equal(state.boundItems[0].contentLanguage, 'en');
+  assert.equal(state.boundItems[0].primaryRepository, null);
+  assert.equal(bindItem(state, { itemId: 'PVTI_1', title: 'Ship' }, { contentLanguage: 'zh-CN' }), true);
+  assert.equal(state.boundItems[0].contentLanguage, 'zh-cn');
+  assert.equal(bindItem(state, { itemId: 'PVTI_1', title: 'Ship' }, { contentLanguage: 'zh-cn' }), false);
+  assert.equal(bindItem(state, { itemId: 'PVTI_1', title: 'Ship' }, {
+    contentLanguage: 'zh-cn',
+    primaryRepository: 'https://github.com/octocat/ship'
+  }), true);
+  assert.deepEqual(state.boundItems[0].primaryRepository, {
+    url: 'https://github.com/octocat/ship',
+    description: 'Primary source repository for Ship.'
+  });
   appendJournal(state, { kind: 'user', turnId: 't1', text: 'Implemented the parser.' });
   appendJournal(state, { kind: 'assistant', turnId: 't1', text: 'Tests pass.' });
   const run = beginUpdate(state, 'run-1');

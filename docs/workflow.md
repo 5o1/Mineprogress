@@ -24,6 +24,12 @@ list. Mutating commands consume a short-lived authorization recorded by UserProm
 cannot create or change bindings on an unrelated turn. Control commands are excluded from later
 update content.
 
+Every binding stores its own content-language tag. Create and bind default it to English; only an
+explicit `--language <tag>` changes that item. The backend also extracts external links from each
+new journal window, while the Codex adapter contributes the current workspace remote. Generators
+use the language marker directly and cite only links materially related to the bound item. The
+workspace remote is also stored as structured `primaryRepository` binding metadata.
+
 Plain `unbind` changes only the thread candidate list. Explicit `unbind --delete` closes linked
 Issue content, deletes the Project item, and then removes the local binding. Status updates also
 close Issues on configured terminal statuses and reopen them on non-terminal statuses. Archiving a
@@ -59,8 +65,12 @@ one academic-style proposal covering background, problem, objectives, scope, met
 evaluation, milestones, and risks. After GitHub confirms that proposal, an Issue body is immutable.
 Meaningful later changes become dated Issue comments with Requirements and Results. Draft items do
 not support comments, so their complete prior body must remain an exact byte prefix of every update.
-The script enforces these constraints independently of generated instructions and re-reads remote
-bodies before mutation. The Project `Update` field remains concise.
+The sole Issue-body exception is a script-owned `## Repository` section after the Abstract. The
+backend inserts or replaces only that section with the primary repository link and description by
+calling `updateIssue`; it never appends the link as progress. It compares the complete remote body
+with the planned baseline first, so an external edit causes a conflict instead of an overwrite. The
+script enforces these constraints independently of generated instructions. The Project `Update`
+field remains concise.
 
 Both the generator and independent reviewer receive full history during backfill. A successful
 backfill records its own revision checkpoint; failure leaves the revision pending for another Stop.

@@ -51,6 +51,7 @@ function generationPrompt(prepared) {
     availableStatuses: prepared.availableStatuses,
     planningDate: prepared.planningDate,
     promptNames: prepared.promptNames,
+    referenceLinks: prepared.referenceLinks,
     boundItems: prepared.boundItems,
     incrementalContext: prepared.context
   })}`;
@@ -65,6 +66,7 @@ function reviewPrompt(contract, prepared, staged) {
     incrementalContext: prepared.context,
     planningDate: prepared.planningDate,
     promptNames: prepared.promptNames,
+    referenceLinks: prepared.referenceLinks,
     boundItems: prepared.boundItems,
     staticReport: staged.staticReport,
     proposedPlan: staged.plan

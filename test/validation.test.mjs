@@ -58,6 +58,23 @@ test('static plan validation rejects update-pipeline narration', () => {
   assert.match(report.errors.join(' '), /control-plane narration/);
 });
 
+test('static plan validation enforces each item content language marker', () => {
+  const englishItem = {
+    ...options,
+    boundItems: [{ itemId: 'PVTI_1', contentLanguage: 'en' }]
+  };
+  const chineseItem = {
+    ...options,
+    boundItems: [{ itemId: 'PVTI_1', contentLanguage: 'zh-cn' }]
+  };
+  assert.match(validatePlan({
+    updates: [{ itemId: 'PVTI_1', summary: '重构已经完成。' }]
+  }, englishItem).errors.join(' '), /content language en/);
+  assert.match(validatePlan({
+    updates: [{ itemId: 'PVTI_1', summary: 'The refactor is complete.' }]
+  }, chineseItem).errors.join(' '), /content language zh-cn/);
+});
+
 test('only a writable created item accepts the one-time academic proposal', () => {
   const writable = {
     ...options,

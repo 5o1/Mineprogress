@@ -1,3 +1,5 @@
+import { validateContentLanguage } from './language.mjs';
+
 const ITEM_KEYS = new Set(['itemId', 'status', 'summary', 'body', 'comment']);
 const PLAN_KEYS = new Set(['updates']);
 const UPDATE_FIELDS = ['status', 'summary', 'body', 'comment'];
@@ -126,6 +128,10 @@ function validateOptionalText(value, prefix, maxCharacters, { format = null } = 
   return errors;
 }
 
+function validateLanguage(text, language, prefix) {
+  return validateContentLanguage(text, language).map(error => `${prefix} ${error}.`);
+}
+
 function validatePendingPreservation(plan, existingPlan, allowedIds, itemsById) {
   const errors = [];
   const proposed = new Map((plan.updates || []).map(update => [update.itemId, update]));
@@ -189,6 +195,7 @@ export function validatePlan(plan, {
     if (seen.has(update.itemId)) errors.push(`${prefix}.itemId is duplicated.`);
     seen.add(update.itemId);
     const item = itemsById.get(update.itemId);
+    const contentLanguage = item?.contentLanguage || 'en';
     if (!update.status && !update.summary && !update.body && !update.comment) {
       errors.push(`${prefix} must change status, summary, body, or comment.`);
     }
@@ -202,6 +209,9 @@ export function validatePlan(plan, {
       for (const narration of findControlPlaneNarration(summary)) {
         errors.push(`${prefix}.summary contains transient Mineprogress control-plane narration (${narration}).`);
       }
+      if (existingById.get(update.itemId)?.summary !== update.summary) {
+        errors.push(...validateLanguage(summary, contentLanguage, `${prefix}.summary`));
+      }
     }
     const existing = existingById.get(update.itemId);
     if (update.body !== undefined && update.body !== null) {
@@ -211,9 +221,11 @@ export function validatePlan(plan, {
           errors.push(`${prefix}.body is immutable after the initial created-item proposal.`);
         }
         errors.push(...validateOptionalText(update.body, `${prefix}.body`, maxBodyCharacters, { format: 'proposal' }));
+        if (!carriedProposal) errors.push(...validateLanguage(update.body, contentLanguage, `${prefix}.body`));
       } else if (item?.contentType === 'draft') {
         if (item.proposalWritable || carriedProposal) {
           errors.push(...validateOptionalText(update.body, `${prefix}.body`, maxBodyCharacters, { format: 'proposal' }));
+          if (!carriedProposal) errors.push(...validateLanguage(update.body, contentLanguage, `${prefix}.body`));
         } else {
           const requiredPrefix = existing?.body || item.body || '';
           if ([...update.body].length > maxBodyCharacters) {
@@ -222,14 +234,24 @@ export function validatePlan(plan, {
           if (!update.body.startsWith(requiredPrefix) || update.body === requiredPrefix) {
             errors.push(`${prefix}.body may only append to the exact Draft body.`);
           } else {
-            errors.push(...validateOptionalText(update.body.slice(requiredPrefix.length).trim(), `${prefix}.body append`, maxBodyCharacters, { format: 'progress' }));
+            const appended = update.body.slice(requiredPrefix.length).trim();
+            errors.push(...validateOptionalText(appended, `${prefix}.body append`, maxBodyCharacters, { format: 'progress' }));
+            errors.push(...validateLanguage(appended, contentLanguage, `${prefix}.body append`));
           }
         }
       } else {
         errors.push(...validateOptionalText(update.body, `${prefix}.body`, maxBodyCharacters));
+        errors.push(...validateLanguage(update.body, contentLanguage, `${prefix}.body`));
       }
     }
     errors.push(...validateOptionalText(update.comment, `${prefix}.comment`, maxCommentCharacters, { format: 'progress' }));
+    if (update.comment) {
+      const pendingComment = existing?.comment;
+      const newCommentText = pendingComment && update.comment.startsWith(pendingComment)
+        ? update.comment.slice(pendingComment.length)
+        : update.comment;
+      errors.push(...validateLanguage(newCommentText, contentLanguage, `${prefix}.comment`));
+    }
     if (update.body && item?.contentType && !['issue', 'draft'].includes(item.contentType)) {
       errors.push(`${prefix}.body cannot update ${item.contentType} content.`);
     }

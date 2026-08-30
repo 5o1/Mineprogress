@@ -34,13 +34,20 @@ configuration. `config.example.json` documents the complete schema; users do not
 
 ## Content contracts
 
-`prompts/create.md`, `prompts/bind.md`, and `prompts/update.md` control generation behavior.
+`prompts/content-metadata.md`, `prompts/create.md`, `prompts/bind.md`, and `prompts/update.md` control
+generation behavior. Every binding stores `contentLanguage`: create and bind default it to `en`,
+while an explicit `--language <tag>` changes only that item. Generators do not infer language from
+the thread or existing content. The backend supplies external links found in the new journal, and
+the active host adapter may add the workspace remote; generation and review retain only links
+directly relevant to the item. The workspace remote is persisted as `primaryRepository` metadata
+with a short description instead of being rediscovered or inferred from existing item content.
 `prompts/review-checklist.md` independently controls semantic review. They are packaged plugin
 resources loaded only for an active background update, not global Codex instructions. A created
 item receives one academic-style proposal. After confirmation, the script API rejects every Issue
-body mutation; Issue history is stored in dated comments. Drafts cannot receive comments, so their
-bodies may grow only by an exact-prefix append. Remote content is read again before either body
-mutation to prevent a stale plan from overwriting an external edit.
+body mutation except deterministic replacement of its script-owned `## Repository` section; Issue
+history is stored in dated comments. Drafts cannot receive comments, so their bodies may grow only
+by an exact-prefix append. Remote content is read again before any body mutation to prevent a stale
+plan from overwriting an external edit.
 
 `check` reads the real options from the Status field and saves them in the global plugin cache.
 Only configured `kanban.terminalStatuses` produce removal suggestions or synchronize linked Issues

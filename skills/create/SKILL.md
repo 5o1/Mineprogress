@@ -11,12 +11,13 @@ in the current user invocation. Run `node <plugin-root>/scripts/mineprogress.mjs
 then run:
 
 ```text
-node <plugin-root>/scripts/mineprogress.mjs create --title <title> --session <session_id> --data-dir <data_dir>
+node <plugin-root>/scripts/mineprogress.mjs create --title <title> [--language <tag>] --session <session_id> --data-dir <data_dir>
 ```
 
 The CLI selects a repository issue or Project draft from the configured visibility route and binds
 the resulting Project item immediately, assigning `kanban.defaultStatus` before it returns. Do not
-create additional items or infer a title from earlier conversation. The next asynchronous Stop pass
+create additional items or infer a title from earlier conversation. Content defaults to English;
+pass `--language` only when the user explicitly requests another language. The next asynchronous Stop pass
 loads `prompts/create.md` only into its isolated generator and creates the one-time academic project
 proposal from the full thread, including context from before installation. The script locks an Issue
 body after that proposal is confirmed. Do not run update manually for the backfill.

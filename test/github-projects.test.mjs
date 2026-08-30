@@ -208,6 +208,46 @@ test('operation preparation locks Issue bodies and permits only exact Draft appe
   }, draft.id, prepared.operations), error => error.code === 'CONTENT_BODY_CONFLICT');
 });
 
+test('primary repository uses a guarded Issue-body update instead of a comment append', async () => {
+  const body = `<!-- mineprogress:managed:start -->
+## Abstract
+
+Repository-aware proposal.
+
+## Background and Significance
+
+Background.
+<!-- mineprogress:managed:end -->`;
+  const project = {
+    id: 'PVT_1', fields: { nodes: [] }, normalizedItems: [{
+      itemId: 'ISSUE_ITEM', contentId: 'I_1', contentType: 'issue', body
+    }]
+  };
+  const prepared = prepareUpdateOperations(config, project, {
+    updates: [{ itemId: 'ISSUE_ITEM', comment: 'Repository metadata synchronized.' }]
+  }, {
+    repositoryReferences: [{
+      itemId: 'ISSUE_ITEM',
+      url: 'https://github.com/octocat/example',
+      description: 'Primary source repository for the example.'
+    }]
+  });
+  assert.deepEqual(prepared.operations.map(operation => operation.kind), ['repositoryReference', 'comment']);
+  assert.match(prepared.operations[0].expected, /## Repository/u);
+  assert.doesNotMatch(prepared.operations[1].value.body, /github\.com/u);
+
+  await applyPreparedOperations(async (query, variables) => {
+    if (query.startsWith('query')) return { node: { body } };
+    assert.match(query, /operation0:updateIssue/u);
+    assert.match(query, /operation1:addComment/u);
+    assert.match(variables.body0, /## Repository/u);
+    return {
+      operation0: { issue: { id: 'I_1' } },
+      operation1: { commentEdge: { node: { id: 'IC_1' } } }
+    };
+  }, project.id, prepared.operations);
+});
+
 test('resume reconciliation distinguishes confirmed, retryable, and conflicting operations', async () => {
   const project = { normalizedItems: [
     { itemId: 'confirmed', status: 'Done', summary: null },

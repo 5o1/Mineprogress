@@ -1,5 +1,6 @@
 import crypto from 'node:crypto';
 import { creationRepository } from './config.mjs';
+import { canManageRepositoryReference, normalizePrimaryRepository, upsertRepositoryReference } from './repository-reference.mjs';
 
 function infrastructureError(message, code, cause) {
   return Object.assign(new Error(message, cause ? { cause } : undefined), { code });
@@ -310,13 +311,35 @@ function commentMarker(key) {
   return `<!-- mineprogress:comment:${key.split(':').at(-1)} -->`;
 }
 
-export function prepareUpdateOperations(config, project, plan, { proposalBodyItemIds = [] } = {}) {
+export function prepareUpdateOperations(config, project, plan, {
+  proposalBodyItemIds = [],
+  repositoryReferences = []
+} = {}) {
   const fields = projectFields(project);
   const items = new Map((project.normalizedItems || []).map(item => [item.itemId, item]));
   const proposalIds = new Set(proposalBodyItemIds);
+  const repositories = new Map(repositoryReferences
+    .map(reference => [reference.itemId, normalizePrimaryRepository(reference)])
+    .filter(([, reference]) => reference));
   const operations = [];
   for (const update of plan.updates) {
     const item = items.get(update.itemId);
+    const repository = repositories.get(update.itemId);
+    const proposalWrite = proposalIds.has(update.itemId);
+    if (repository && item?.contentType === 'issue' && !proposalWrite &&
+        canManageRepositoryReference(item.body)) {
+      const expected = upsertRepositoryReference(item.body, repository);
+      if (expected !== item.body) operations.push({
+        key: operationKey(update, 'repository-reference', expected),
+        kind: 'repositoryReference',
+        itemId: update.itemId,
+        contentId: item.contentId,
+        contentType: item.contentType,
+        before: item.body || '',
+        expected,
+        value: { body: expected }
+      });
+    }
     if (update.status) {
       const { field, option } = statusOption(project, config, update.status);
       if (item?.status !== update.status) operations.push({
@@ -361,7 +384,6 @@ export function prepareUpdateOperations(config, project, plan, { proposalBodyIte
         throw infrastructureError('Project item does not support a managed body.', 'PROJECT_ITEM_BODY_UNSUPPORTED');
       }
       if (item.body !== update.body) {
-        const proposalWrite = proposalIds.has(update.itemId);
         if (item.contentType === 'issue' && !proposalWrite) {
           throw infrastructureError('Issue body is immutable after its initial proposal.', 'ISSUE_BODY_IMMUTABLE');
         }
@@ -369,15 +391,18 @@ export function prepareUpdateOperations(config, project, plan, { proposalBodyIte
           throw infrastructureError('Draft body updates must append to the exact existing body.', 'DRAFT_BODY_APPEND_ONLY');
         }
         const kind = proposalWrite ? 'proposalBody' : 'draftAppend';
+        const expected = item.contentType === 'issue' && proposalWrite && repository
+          ? upsertRepositoryReference(update.body, repository)
+          : update.body;
         operations.push({
-          key: operationKey(update, kind, update.body),
+          key: operationKey(update, kind, expected),
           kind,
           itemId: update.itemId,
           contentId: item.contentId,
           contentType: item.contentType,
           before: item.body || '',
-          expected: update.body,
-          value: { body: update.body }
+          expected,
+          value: { body: expected }
         });
       }
     }
@@ -442,7 +467,7 @@ export async function reconcilePreparedOperations(project, operations, { client 
     }
     const actual = operation.kind === 'status' ? item.status
       : operation.kind === 'summary' ? item.summary
-        : ['proposalBody', 'draftAppend'].includes(operation.kind) ? item.body
+        : ['proposalBody', 'draftAppend', 'repositoryReference'].includes(operation.kind) ? item.body
           : operation.kind === 'issueState' ? item.contentState : undefined;
     if (actual === operation.expected) confirmed.push(operation);
     else if (actual === operation.before) retryable.push(operation);
@@ -453,7 +478,8 @@ export async function reconcilePreparedOperations(project, operations, { client 
 
 export async function applyPreparedOperations(client, projectId, operations) {
   if (!operations.length) return { applied: 0 };
-  for (const operation of operations.filter(candidate => ['proposalBody', 'draftAppend'].includes(candidate.kind))) {
+  for (const operation of operations.filter(candidate =>
+    ['proposalBody', 'draftAppend', 'repositoryReference'].includes(candidate.kind))) {
     const query = `query($id:ID!) { node(id:$id) {
       ... on Issue { body }
       ... on DraftIssue { body }
@@ -487,6 +513,8 @@ export async function applyPreparedOperations(client, projectId, operations) {
       variables[`contentId${index}`] = operation.contentId;
       variables[`body${index}`] = operation.value.body;
       if (operation.kind === 'proposalBody' && operation.contentType === 'issue') {
+        selections.push(`operation${index}:updateIssue(input:{id:$contentId${index},body:$body${index}}) { issue { id } }`);
+      } else if (operation.kind === 'repositoryReference' && operation.contentType === 'issue') {
         selections.push(`operation${index}:updateIssue(input:{id:$contentId${index},body:$body${index}}) { issue { id } }`);
       } else if (['proposalBody', 'draftAppend'].includes(operation.kind) && operation.contentType === 'draft') {
         selections.push(`operation${index}:updateProjectV2DraftIssue(input:{draftIssueId:$contentId${index},body:$body${index}}) { draftIssue { id } }`);

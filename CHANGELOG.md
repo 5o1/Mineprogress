@@ -26,6 +26,12 @@ Notable user-visible changes are documented here. Entries follow
 - Enforced every required, typed, and closed field in host adapter manifests during validation.
 - Reconciled attempted shutdown submissions from the next asynchronous Stop worker so continued
   threads do not leave newer journal entries indefinitely blocked while waiting for a resume event.
+- Persisted a default-English language tag per bound item, with explicit per-item overrides, and
+  rejected generated content that violates supported language markers.
+- Supplied generators and reviewers with deduplicated thread reference links so durable Issue,
+  pull-request, artifact, and source links are not silently omitted from relevant records.
+- Stored the active workspace repository as item metadata and synchronized its link and description
+  through a guarded, script-owned Issue proposal section instead of an appended progress comment.
 
 ## [0.5.0] - 2026-08-30
 

@@ -16,7 +16,8 @@ test('background worker generates and reviews a plan without submitting it', asy
     prompt: 'Update contract',
     existingPlan: { updates: [] },
     availableStatuses: ['Todo', 'Done'],
-    boundItems: [{ itemId: 'PVTI_1', title: 'Parser' }],
+    boundItems: [{ itemId: 'PVTI_1', title: 'Parser', contentLanguage: 'en' }],
+    referenceLinks: ['https://github.com/example/parser'],
     context: [{ sequence: 1, kind: 'user', text: 'Parser is complete.' }],
     useThreadHistory: true,
     promptNames: ['create'],
@@ -56,6 +57,8 @@ test('background worker generates and reviews a plan without submitting it', asy
   assert.equal(prompts.length, 2);
   assert.deepEqual(forks, ['session-1', 'session-1']);
   assert.match(prompts[0], /Parser is complete/);
+  assert.match(prompts[0], /contentLanguage/);
+  assert.match(prompts[0], /https:\/\/github.com\/example\/parser/);
   assert.match(prompts[0], /messages from before Mineprogress was installed/);
   assert.match(prompts[1], /proposedPlan/);
   assert.match(prompts[1], /Reviewer checklist/);

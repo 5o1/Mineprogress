@@ -3,6 +3,7 @@ import process from 'node:process';
 import { fileURLToPath } from 'node:url';
 import { makeClient } from '../../backend/github-projects.mjs';
 import { resolveGithubToken } from './github-auth.mjs';
+import { discoverWorkspaceReferences } from './workspace-references.mjs';
 
 export const RESOURCE_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../../..');
 
@@ -24,13 +25,15 @@ export function createCodexRuntime({
   sessionId,
   environment = process.env,
   resourceRoot = RESOURCE_ROOT,
-  clientProvider
+  clientProvider,
+  referenceProvider
 } = {}) {
   return {
     dataDir: dataDir || requireDataDir(environment),
     sessionId: sessionId || environment.MINEPROGRESS_SESSION_ID || null,
     environment,
     resourceRoot,
+    referenceLinks: referenceProvider || (() => discoverWorkspaceReferences()),
     githubClient: clientProvider || (async () => {
       const authentication = await resolveGithubToken({ env: environment });
       return makeClient(authentication.token);

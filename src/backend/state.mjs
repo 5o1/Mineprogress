@@ -2,6 +2,8 @@ import crypto from 'node:crypto';
 import fs from 'node:fs/promises';
 import path from 'node:path';
 import { atomicWriteFile } from './atomic-file.mjs';
+import { normalizeContentLanguage } from './language.mjs';
+import { normalizePrimaryRepository } from './repository-reference.mjs';
 
 const STATE_VERSION = 1;
 const PLAN_FORMAT_VERSION = 4;
@@ -45,6 +47,8 @@ function normalizeState(state) {
     item.url ??= null;
     item.repository ??= null;
     item.proposalInitialized ??= item.bindingSource !== 'create';
+    item.contentLanguage = normalizeContentLanguage(item.contentLanguage);
+    item.primaryRepository = normalizePrimaryRepository(item.primaryRepository, item.title);
   }
   state.lastPlannedUpdate ??= state.lastSuccessfulUpdate || null;
   state.pendingPlan ??= null;
@@ -143,8 +147,26 @@ export function isControlTurn(state, turnId) {
   return Boolean(turnId && state.controlTurnIds?.includes(turnId));
 }
 
-export function bindItem(state, item, { source = 'bind' } = {}) {
-  if (state.boundItems.some(bound => bound.itemId === item.itemId)) return false;
+export function bindItem(state, item, {
+  source = 'bind',
+  contentLanguage = 'en',
+  primaryRepository = null
+} = {}) {
+  const normalizedLanguage = normalizeContentLanguage(contentLanguage);
+  const normalizedRepository = normalizePrimaryRepository(primaryRepository, item.title);
+  const existing = state.boundItems.find(bound => bound.itemId === item.itemId);
+  if (existing) {
+    let changed = false;
+    if (existing.contentLanguage !== normalizedLanguage) {
+      existing.contentLanguage = normalizedLanguage;
+      changed = true;
+    }
+    if (normalizedRepository && JSON.stringify(existing.primaryRepository) !== JSON.stringify(normalizedRepository)) {
+      existing.primaryRepository = normalizedRepository;
+      changed = true;
+    }
+    return changed;
+  }
   const backfillRevision = (state.fullContextRequestedRevision || 0) + 1;
   state.boundItems.push({
     itemId: item.itemId,
@@ -154,6 +176,8 @@ export function bindItem(state, item, { source = 'bind' } = {}) {
     url: item.url || item.issueUrl || null,
     repository: item.repository || null,
     proposalInitialized: source !== 'create',
+    contentLanguage: normalizedLanguage,
+    primaryRepository: normalizedRepository,
     bindingSource: source,
     backfillRevision,
     boundAt: new Date().toISOString()

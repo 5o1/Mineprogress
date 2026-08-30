@@ -15,7 +15,10 @@ import {
 } from './github-projects.mjs';
 import { logError, resolveError, unresolvedErrors } from './errors.mjs';
 import { withSessionLock } from './lock.mjs';
+import { normalizeContentLanguage } from './language.mjs';
 import { readProjectMetadata, updateProjectMetadata } from './metadata.mjs';
+import { extractReferenceLinks, mergeReferenceLinks } from './references.mjs';
+import { primaryRepositoryFromLinks } from './repository-reference.mjs';
 import {
   beginUpdate,
   beginSubmissionAttempt,
@@ -41,6 +44,10 @@ function requireRuntime(runtime) {
     throw Object.assign(new Error('Backend runtime requires a GitHub client provider.'), { code: 'GITHUB_CLIENT_REQUIRED' });
   }
   return runtime;
+}
+
+async function runtimeReferenceLinks(runtime) {
+  return typeof runtime.referenceLinks === 'function' ? await runtime.referenceLinks() : [];
 }
 
 function pluginConfig(dataDir, runtime) {
@@ -230,16 +237,18 @@ async function initCommand(dataDir, flags, positional, runtime) {
 async function createCommand(dataDir, flags, positional, runtime) {
   const sessionId = requiredSession(flags, runtime);
   const title = flags.title || positional.join(' ');
+  const contentLanguage = normalizeContentLanguage(flags.language);
   const initial = await readState(dataDir, sessionId);
   if (!initial) throw Object.assign(new Error('Thread cache does not exist.'), { code: 'STATE_NOT_FOUND' });
   requireCommandAuthorization(initial, 'create');
   const config = await pluginConfig(dataDir, runtime);
   const body = await readOptionalText(flags['body-file']);
+  const primaryRepository = primaryRepositoryFromLinks(await runtimeReferenceLinks(runtime), title);
   const item = await createKanbanItem(config, await runtime.githubClient(), title, body);
   await withSessionLock(dataDir, sessionId, async () => {
     const state = await readState(dataDir, sessionId);
     const consumeAuthorization = requireCommandAuthorization(state, 'create');
-    bindItem(state, item, { source: 'create' });
+    bindItem(state, item, { source: 'create', contentLanguage, primaryRepository });
     consumeAuthorization();
     await writeState(dataDir, state);
   });
@@ -263,13 +272,16 @@ async function createCommand(dataDir, flags, positional, runtime) {
       repositoryVisibility: item.policy.repositoryVisibility,
       defaultStatus: item.defaultStatus
     },
-    bound: true
+    bound: true,
+    contentLanguage,
+    primaryRepository
   };
 }
 
 async function bindCommand(dataDir, flags, positional, runtime) {
   const sessionId = requiredSession(flags, runtime);
   const itemId = flags.item || positional[0];
+  const contentLanguage = normalizeContentLanguage(flags.language);
   if (!itemId) throw Object.assign(new Error('Pass --item <Project item id>.'), { code: 'ITEM_ID_REQUIRED' });
   const initial = await readState(dataDir, sessionId);
   if (!initial) throw Object.assign(new Error('Thread cache does not exist.'), { code: 'STATE_NOT_FOUND' });
@@ -278,15 +290,16 @@ async function bindCommand(dataDir, flags, positional, runtime) {
   const project = await readProject(config, await runtime.githubClient());
   const item = project.normalizedItems.find(candidate => candidate.itemId === itemId);
   if (!item) throw Object.assign(new Error('Item is not in the configured Project.'), { code: 'PROJECT_ITEM_NOT_FOUND' });
+  const primaryRepository = primaryRepositoryFromLinks(await runtimeReferenceLinks(runtime), item.title);
   const changed = await withSessionLock(dataDir, sessionId, async () => {
     const state = await readState(dataDir, sessionId);
     const consumeAuthorization = requireCommandAuthorization(state, 'bind');
-    const bound = bindItem(state, item, { source: 'bind' });
+    const bound = bindItem(state, item, { source: 'bind', contentLanguage, primaryRepository });
     consumeAuthorization();
     await writeState(dataDir, state);
     return bound;
   });
-  return { changed, item };
+  return { changed, item, contentLanguage, primaryRepository };
 }
 
 async function unbindCommand(dataDir, flags, positional, runtime) {
@@ -383,6 +396,7 @@ async function prepareUpdate(dataDir, sessionId, runtime) {
   const config = await pluginConfig(dataDir, runtime);
   const project = await readProject(config, await runtime.githubClient());
   const availableStatuses = projectStatusOptions(project, config).map(option => option.name);
+  const workspaceReferenceLinks = await runtimeReferenceLinks(runtime);
   await updateProjectMetadata(dataDir, config, { availableStatuses });
   const state = await withSessionLock(dataDir, sessionId, async () => {
     const latest = await readState(dataDir, sessionId);
@@ -393,6 +407,12 @@ async function prepareUpdate(dataDir, sessionId, runtime) {
       completeUpdate(latest, setup.runId);
       await writeState(dataDir, latest);
       return null;
+    }
+    const primaryRepository = primaryRepositoryFromLinks(workspaceReferenceLinks);
+    if (primaryRepository) {
+      for (const binding of latest.boundItems) {
+        binding.primaryRepository ||= primaryRepositoryFromLinks(workspaceReferenceLinks, binding.title);
+      }
     }
     latest.activeUpdate.projectSnapshot = {
       id: project.id,
@@ -409,10 +429,18 @@ async function prepareUpdate(dataDir, sessionId, runtime) {
     ? [...new Set(boundItems.filter(item => item.backfillRequested)
       .map(item => item.bindingSource === 'create' ? 'create' : 'bind'))]
     : ['update'];
-  const prompt = (await Promise.all(promptNames.map(async name =>
-    fs.readFile(path.join(runtime.resourceRoot, 'prompts', `${name}.md`), 'utf8')))).join('\n\n');
+  const [metadataPrompt, ...modePrompts] = await Promise.all([
+    fs.readFile(path.join(runtime.resourceRoot, 'prompts', 'content-metadata.md'), 'utf8'),
+    ...promptNames.map(name => fs.readFile(path.join(runtime.resourceRoot, 'prompts', `${name}.md`), 'utf8'))
+  ]);
+  const prompt = [metadataPrompt, ...modePrompts].join('\n\n');
   const model = run.useThreadHistory && boundItems.some(item => item.backfillRequested && item.bindingSource === 'create')
     ? config.models.create : config.models.update;
+  const context = pendingJournal(state).filter(event => event.sequence <= run.toSequence);
+  const referenceLinks = mergeReferenceLinks(
+    extractReferenceLinks(context),
+    workspaceReferenceLinks
+  );
   return {
     outcome: 'generate_and_review',
     sessionId,
@@ -436,7 +464,8 @@ async function prepareUpdate(dataDir, sessionId, runtime) {
       comment: 'dated append-only Issue progress entry or null'
     }] },
     boundItems,
-    context: pendingJournal(state).filter(event => event.sequence <= run.toSequence)
+    context,
+    referenceLinks
   };
 }
 
@@ -453,6 +482,8 @@ function validationBoundItems(state, run, projectItems) {
       (binding?.backfillRevision || 1) <= run.fullContextRevision);
     return {
       ...item,
+      contentLanguage: binding?.contentLanguage || 'en',
+      primaryRepository: binding?.primaryRepository || null,
       bindingSource: binding?.bindingSource || 'bind',
       backfillRequested,
       proposalWritable: Boolean(backfillRequested && binding?.bindingSource === 'create' && !binding.proposalInitialized),
@@ -577,7 +608,10 @@ async function applyUpdate(dataDir, sessionId, flags, runtime) {
       config,
       state.activeUpdate.projectSnapshot || projectSnapshot,
       state.activeUpdate.stagedPlan,
-      { proposalBodyItemIds: state.activeUpdate.proposalBodyItemIds || [] }
+      {
+        proposalBodyItemIds: state.activeUpdate.proposalBodyItemIds || [],
+        repositoryReferences: state.boundItems.map(item => ({ itemId: item.itemId, ...item.primaryRepository }))
+      }
     );
     const pending = storePendingPlan(state, runId, state.activeUpdate.stagedPlan, submission, review);
     await writeState(dataDir, state);

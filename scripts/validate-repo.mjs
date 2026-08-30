@@ -97,6 +97,7 @@ const requiredFiles = [
   'prompts/update.md',
   'prompts/review.md',
   'prompts/review-checklist.md',
+  'prompts/content-metadata.md',
   'docs/configuration.md',
   'docs/workflow.md',
   'docs/development.md',
@@ -114,8 +115,12 @@ const requiredFiles = [
   'src/backend/application.mjs',
   'src/backend/index.mjs',
   'src/backend/lifecycle.mjs',
+  'src/backend/language.mjs',
+  'src/backend/references.mjs',
+  'src/backend/repository-reference.mjs',
   'src/host/contract.mjs',
   'src/frontends/codex/cli.mjs',
+  'src/frontends/codex/workspace-references.mjs',
   'platforms/adapter.schema.json'
 ];
 for (const relative of requiredFiles) {

@@ -20,3 +20,10 @@ Reject the plan if any answer is unsatisfactory:
    absent?
 9. Control-plane isolation: Does the plan omit generator, reviewer, validation, worker, and
    submission state?
+10. Language: Does each newly generated field use the item's authoritative `contentLanguage`, without
+    inferring a replacement language from the conversation or existing content?
+11. References: Does the plan retain directly relevant repository, Issue, pull request, artifact,
+    and durable-source links from `referenceLinks` or full-thread evidence while omitting incidental
+    and unrelated URLs?
+12. Primary repository: Does the plan leave `primaryRepository` synchronization to the script and
+    avoid redundantly copying that stable link into unrelated progress comments?
