@@ -5,6 +5,8 @@ Notable user-visible changes are documented here. Entries follow
 
 ## [Unreleased]
 
+## [0.6.1] - 2026-08-30
+
 ### Fixed
 
 - Release a thread binding only after its configured terminal Project status and linked Issue closure
