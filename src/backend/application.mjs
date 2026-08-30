@@ -546,7 +546,7 @@ async function prepareUpdate(dataDir, sessionId, runtime) {
       for (const [itemId, facts] of recoveredEvidence) {
         mergeEvidenceFacts(latest, itemId, facts, { recoveredAt });
       }
-      if (latest.boundItems.some(item => item.statusIntent) && !statusRules) {
+      if (!statusRules) {
         await writeState(dataDir, latest);
         return latest;
       }
@@ -561,7 +561,7 @@ async function prepareUpdate(dataDir, sessionId, runtime) {
       await writeState(dataDir, latest);
       return latest;
     });
-    if (state?.boundItems.some(item => item.statusIntent) && !statusRules) {
+    if (!statusRules) {
       return {
         outcome: 'status_rules_required',
         sessionId,
@@ -802,6 +802,18 @@ async function applyUpdate(dataDir, sessionId, flags, runtime) {
     const updatesById = new Map(state.activeUpdate.stagedPlan.updates.map(update => [update.itemId, update]));
     const projectItems = new Map((state.activeUpdate.projectSnapshot || projectSnapshot).normalizedItems
       .map(item => [item.itemId, item]));
+    for (const binding of state.boundItems) {
+      const update = updatesById.get(binding.itemId);
+      if (!update?.status) continue;
+      const item = projectItems.get(binding.itemId);
+      const terminalIssueOpen = config.kanban.terminalStatuses.includes(update.status) &&
+        item?.contentType === 'issue' && item.contentState !== 'CLOSED';
+      if (item?.status !== update.status || terminalIssueOpen) {
+        recordStatusIntent(state, binding.itemId, update.status, state.activeUpdate.toSequence, {
+          role: config.kanban.terminalStatuses.includes(update.status) ? 'completed' : null
+        });
+      }
+    }
     const satisfiedStatusIntents = state.boundItems.flatMap(binding => {
       const intent = binding.statusIntent;
       if (!intent) return [];

@@ -1,8 +1,7 @@
 import fs from 'node:fs/promises';
 import { assertHostEvent } from '../host/contract.mjs';
 import { calendarDate } from './calendar.mjs';
-import { configPath, loadConfig } from './config.mjs';
-import { isCompletionDeclaration } from './intent.mjs';
+import { configPath } from './config.mjs';
 import { submitPendingUpdate } from './application.mjs';
 import { withSessionLock } from './lock.mjs';
 import {
@@ -13,7 +12,6 @@ import {
   openSession,
   pruneStaleStates,
   readState,
-  recordStatusIntent,
   writeState
 } from './state.mjs';
 
@@ -52,10 +50,6 @@ export async function handleUserPrompt(event, runtime) {
     return { command: action, initializationRequested: true };
   }
   const currentDate = calendarDate(typeof runtime.now === 'function' ? runtime.now() : new Date());
-  const completionDeclaration = !control && isCompletionDeclaration(event.prompt);
-  const config = initialized && completionDeclaration
-    ? await loadConfig(configPath(runtime.environment || {}, runtime.resourceRoot, runtime.dataDir))
-    : null;
   let dailySubmission = null;
   if (initialized && existing?.pendingPlan && existing.dailySubmissionDate !== currentDate) {
     dailySubmission = await submitPendingUpdate(runtime.dataDir, event.sessionId, { verify: true }, runtime);
@@ -67,17 +61,7 @@ export async function handleUserPrompt(event, runtime) {
       markControlTurn(state, event.turnId);
       authorizeCommand(state, action, event.turnId);
     }
-    const journalEvent = appendJournal(state, { kind: 'user', turnId: event.turnId, text: event.prompt, control });
-    if (journalEvent && state.boundItems.length === 1 && completionDeclaration) {
-      const targetStatus = config?.kanban?.statusRoles?.completed || config?.kanban?.terminalStatuses?.[0];
-      if (targetStatus) recordStatusIntent(
-        state,
-        state.boundItems[0].itemId,
-        targetStatus,
-        journalEvent.sequence,
-        { role: 'completed' }
-      );
-    }
+    appendJournal(state, { kind: 'user', turnId: event.turnId, text: event.prompt, control });
     await writeState(runtime.dataDir, state);
   });
   return {

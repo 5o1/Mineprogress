@@ -67,12 +67,13 @@ the normal review path; it can advance only when every new event is explicitly f
 New journal events arriving during a run remain outside its fixed batch and are processed by the
 next pass.
 
-An explicit completion statement for a thread with one bound item records a durable `completed`
-status intent. Generation evaluates that intent from the verified per-item evidence ledger, pending
-reviewed evidence, the new journal, and current Project fields. Static validation requires the
-configured terminal status; linked Issues are closed by the resulting scripted operation. The
-intent is cleared only after GitHub confirms both operations. If Project statuses changed, the
-worker first synchronizes configuration and generates script-validated transition rules.
+UserPromptSubmit never classifies natural-language status intent. The background generator evaluates
+the journal semantically from the verified per-item evidence ledger, pending reviewed evidence,
+current Project fields, and generated status rules. A proposed status transition becomes a durable
+intent only after independent review and static transition checks pass. Linked Issues are closed by
+the resulting scripted terminal operation, and the intent is cleared only after GitHub confirms all
+operations. If Project statuses changed, the worker first synchronizes configuration and generates
+script-validated transition rules.
 
 The first full-history pass loads `prompts/create.md` for newly created items or `prompts/bind.md`
 for existing items. Later passes load `prompts/update.md`. These files are passed only to ephemeral

@@ -137,7 +137,12 @@ test('reviewed incremental plan is stored before one later GitHub submission', a
   assert.equal(submissions, 0);
   const pendingState = await readState(dataDir, 'session-1');
   assert.equal(pendingState.pendingPlan.plan.updates.length, 1);
+  assert.equal(pendingState.boundItems[0].statusIntent.targetStatus, 'Done');
+  assert.deepEqual(pendingState.pendingPlan.satisfiedStatusIntents, [{
+    itemId: 'PVTI_1', targetStatus: 'Done', revision: 1
+  }]);
   assert.equal(pendingState.pendingPlan.operations.find(operation => operation.kind === 'status').before, 'Todo');
+  await updateProjectMetadata(dataDir, config, { availableStatuses, statusRules: prepared.statusRules });
 
   const originalPendingPlan = structuredClone(pendingState.pendingPlan);
   appendJournal(pendingState, { kind: 'user', turnId: 'turn-2', text: 'Check.' });
@@ -180,6 +185,7 @@ test('reviewed incremental plan is stored before one later GitHub submission', a
   assert.equal(submissions, 2);
   const finalState = await readState(dataDir, 'session-1');
   assert.equal(finalState.pendingPlan, null);
+  assert.equal(finalState.boundItems[0].statusIntent, null);
   assert.equal(finalState.lastSuccessfulUpdate.sequence, 3);
   assert.equal(projectReads, 4);
 });
