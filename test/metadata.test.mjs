@@ -5,7 +5,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { readProjectMetadata, updateProjectMetadata } from '../scripts/lib/metadata.mjs';
 
-const config = { ownerType: 'user', owner: 'octocat', projectNumber: 1, defaultRepository: 'octocat/todos' };
+const config = { ownerType: 'user', owner: 'octocat', projectNumber: 1, creation: { repository: 'octocat/todos' } };
 
 test('Project metadata cache is global rather than thread-scoped', async t => {
   const dataDir = await fs.mkdtemp(path.join(os.tmpdir(), 'mineprogress-metadata-'));
@@ -18,4 +18,8 @@ test('Project metadata cache is global rather than thread-scoped', async t => {
   assert.deepEqual(metadata.availableStatuses, ['Backlog', 'Building', 'Shipped']);
   assert.equal(metadata.creationPolicy.route, 'draft');
   assert.ok(metadata.checkedAt);
+  const legacy = await readProjectMetadata(dataDir, {
+    ownerType: 'user', owner: 'octocat', projectNumber: 1, defaultRepository: 'octocat/todos'
+  });
+  assert.equal(legacy.creationPolicy.route, 'draft');
 });

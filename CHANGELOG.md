@@ -17,6 +17,9 @@ Notable user-visible changes are documented here. Entries follow
 
 ### Changed
 
+- Renamed the persisted Issue target to `creation.repository`; legacy `defaultRepository` values
+  remain readable, while initialization no longer claims linked repositories reveal GitHub's
+  single default repository.
 - Deferred Project submissions remain queued until GitHub read-back confirms every field update.
 - Stop persists the turn locally and delegates model work to a non-blocking asynchronous Hook.
 - Project summaries remain concise while Issue comments retain append-only progress history.

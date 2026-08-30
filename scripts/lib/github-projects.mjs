@@ -1,4 +1,5 @@
 import crypto from 'node:crypto';
+import { creationRepository } from './config.mjs';
 
 function infrastructureError(message, code, cause) {
   return Object.assign(new Error(message, cause ? { cause } : undefined), { code });
@@ -175,7 +176,7 @@ export async function createDraftItem(config, client, title, body = '') {
 function splitRepository(nameWithOwner) {
   const parts = String(nameWithOwner || '').split('/');
   if (parts.length !== 2 || parts.some(part => !part)) {
-    throw infrastructureError('defaultRepository must use owner/name format.', 'CONFIG_INVALID');
+    throw infrastructureError('creation.repository must use owner/name format.', 'CONFIG_INVALID');
   }
   return { owner: parts[0], name: parts[1] };
 }
@@ -184,12 +185,12 @@ export async function readRepository(client, nameWithOwner) {
   const { owner, name } = splitRepository(nameWithOwner);
   const query = `query($owner:String!, $name:String!) { repository(owner:$owner,name:$name) { id nameWithOwner visibility } }`;
   const data = await client(query, { owner, name });
-  if (!data.repository) throw infrastructureError('Configured default repository was not found.', 'REPOSITORY_NOT_FOUND');
+  if (!data.repository) throw infrastructureError('Configured Issue repository was not found.', 'REPOSITORY_NOT_FOUND');
   return data.repository;
 }
 
 export function selectCreationRoute(config, projectVisibility, repositoryVisibility) {
-  if (!config.defaultRepository) return { route: 'draft', key: 'no_default_repository' };
+  if (!creationRepository(config)) return { route: 'draft', key: 'no_creation_repository' };
   const project = config.creation.projectVisibility === 'auto' ? projectVisibility : config.creation.projectVisibility;
   const repository = config.creation.repositoryVisibility === 'auto' ? repositoryVisibility : config.creation.repositoryVisibility;
   if (!['public', 'private'].includes(project) || !['public', 'private'].includes(repository)) {
@@ -201,10 +202,11 @@ export function selectCreationRoute(config, projectVisibility, repositoryVisibil
 
 export async function inspectCreationPolicy(config, client, existingProject) {
   const project = existingProject || await readProject(config, client);
-  if (!config.defaultRepository) {
-    return { route: 'draft', key: 'no_default_repository', projectVisibility: project.public ? 'public' : 'private', repositoryVisibility: null, repository: null };
+  const configuredRepository = creationRepository(config);
+  if (!configuredRepository) {
+    return { route: 'draft', key: 'no_creation_repository', projectVisibility: project.public ? 'public' : 'private', repositoryVisibility: null, repository: null };
   }
-  const repository = await readRepository(client, config.defaultRepository);
+  const repository = await readRepository(client, configuredRepository);
   return {
     ...selectCreationRoute(config, project.public ? 'public' : 'private', repository.visibility.toLowerCase()),
     repository: repository.nameWithOwner,
@@ -257,7 +259,7 @@ export async function createKanbanItem(config, client, title, body = '') {
     issueNumber: issue.number,
     issueUrl: issue.url,
     url: issue.url,
-    repository: config.defaultRepository,
+    repository: creationRepository(config),
     defaultStatus,
     policy
   };

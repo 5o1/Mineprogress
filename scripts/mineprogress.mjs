@@ -3,7 +3,7 @@ import fs from 'node:fs/promises';
 import path from 'node:path';
 import process from 'node:process';
 import { fileURLToPath } from 'node:url';
-import { configPath, createConfig, detectTerminalStatuses, loadConfig, saveConfig, selectDefaultStatus } from './lib/config.mjs';
+import { configPath, createConfig, creationRepository, detectTerminalStatuses, loadConfig, saveConfig, selectDefaultStatus } from './lib/config.mjs';
 import { resolveGithubToken } from './lib/auth.mjs';
 import { suggestBindings } from './lib/check.mjs';
 import {
@@ -103,14 +103,14 @@ function initializationConfig(flags) {
   }
   return createConfig({
     ...parseProjectUrl(flags['project-url']),
-    defaultRepository: flags.repository || '',
+    creation: { repository: flags.repository || '' },
     statusFieldName: flags['status-field'] || 'Status',
     updateFieldName: flags['update-field'] || 'Update',
     kanban: { defaultStatus: flags['default-status'] || '', terminalStatuses: [] }
   });
 }
 
-export function resolveInitializationRepository(flags, project) {
+export function resolveInitializationCreationRepository(flags, project) {
   const candidates = [...new Map((project.repositories?.nodes || [])
     .filter(repository => repository?.nameWithOwner)
     .map(repository => [repository.nameWithOwner, {
@@ -118,16 +118,16 @@ export function resolveInitializationRepository(flags, project) {
       visibility: repository.visibility?.toLowerCase() || null
     }])).values()];
   if (flags.repository) {
-    return { defaultRepository: flags.repository, source: 'explicit', candidates, selectionRequired: false };
+    return { repository: flags.repository, source: 'explicit', candidates, selectionRequired: false };
   }
   if (flags['no-repository']) {
-    return { defaultRepository: '', source: 'explicit-none', candidates, selectionRequired: false };
+    return { repository: '', source: 'explicit-none', candidates, selectionRequired: false };
   }
   if (candidates.length === 1) {
-    return { defaultRepository: candidates[0].nameWithOwner, source: 'project', candidates, selectionRequired: false };
+    return { repository: candidates[0].nameWithOwner, source: 'sole-linked', candidates, selectionRequired: false };
   }
   return {
-    defaultRepository: '',
+    repository: '',
     source: candidates.length ? null : 'none',
     candidates,
     selectionRequired: candidates.length > 1
@@ -138,8 +138,11 @@ async function inspectInitialization(dataDir, flags) {
   let config = initializationConfig(flags);
   const client = await githubClient();
   const project = await readProject(config, client);
-  const repositorySelection = resolveInitializationRepository(flags, project);
-  config = createConfig({ ...config, defaultRepository: repositorySelection.defaultRepository });
+  const repositorySelection = resolveInitializationCreationRepository(flags, project);
+  config = createConfig({
+    ...config,
+    creation: { ...config.creation, repository: repositorySelection.repository }
+  });
   const fields = project.fields?.nodes || [];
   const statusField = fields.find(field => field.name === config.statusFieldName);
   const updateField = fields.find(field => field.name === config.updateFieldName);
@@ -183,9 +186,9 @@ async function initCommand(dataDir, flags, positional) {
     owner: inspection.config.owner,
     ownerType: inspection.config.ownerType,
     projectNumber: inspection.config.projectNumber,
-    defaultRepository: inspection.config.defaultRepository || null,
-    defaultRepositorySource: inspection.repositorySelection.source,
-    repositoryCandidates: inspection.repositorySelection.candidates,
+    creationRepository: creationRepository(inspection.config) || null,
+    creationRepositorySource: inspection.repositorySelection.source,
+    linkedRepositoryCandidates: inspection.repositorySelection.candidates,
     projectVisibility: inspection.creationPolicy?.projectVisibility || (inspection.project.public ? 'public' : 'private'),
     repositoryVisibility: inspection.creationPolicy?.repositoryVisibility || null,
     creationRoute: inspection.creationPolicy?.route || null,
@@ -199,7 +202,7 @@ async function initCommand(dataDir, flags, positional) {
   if (inspection.repositorySelection.selectionRequired) {
     return {
       outcome: 'repository_selection_required',
-      message: 'The Project links multiple repositories. Select one with --repository <owner/name>, or explicitly choose draft-only creation with --no-repository.',
+      message: 'GitHub public GraphQL exposes linked repositories but not the Project default. Select the Issue repository with --repository <owner/name>, or explicitly choose draft-only creation with --no-repository.',
       ...result
     };
   }
@@ -213,6 +216,7 @@ async function initCommand(dataDir, flags, positional) {
   await updateProjectMetadata(dataDir, inspection.config, {
     availableStatuses: inspection.availableStatuses,
     creationPolicy: {
+      repository: inspection.creationPolicy.repository,
       projectVisibility: inspection.creationPolicy.projectVisibility,
       repositoryVisibility: inspection.creationPolicy.repositoryVisibility,
       route: inspection.creationPolicy.route,
@@ -244,6 +248,7 @@ async function createCommand(dataDir, flags, positional) {
     await writeState(dataDir, state);
   });
   await updateProjectMetadata(dataDir, config, { creationPolicy: {
+    repository: item.policy.repository,
     projectVisibility: item.policy.projectVisibility,
     repositoryVisibility: item.policy.repositoryVisibility,
     route: item.policy.route,
@@ -257,6 +262,7 @@ async function createCommand(dataDir, flags, positional) {
       issueNumber: item.issueNumber || null,
       issueUrl: item.issueUrl || null,
       route: item.policy.route,
+      repository: item.policy.repository,
       projectVisibility: item.policy.projectVisibility,
       repositoryVisibility: item.policy.repositoryVisibility,
       defaultStatus: item.defaultStatus
@@ -325,6 +331,7 @@ async function checkCommand(dataDir, flags) {
   await updateProjectMetadata(dataDir, config, {
     availableStatuses,
     creationPolicy: {
+      repository: creationPolicy.repository,
       projectVisibility: creationPolicy.projectVisibility,
       repositoryVisibility: creationPolicy.repositoryVisibility,
       route: creationPolicy.route,
@@ -337,6 +344,7 @@ async function checkCommand(dataDir, flags) {
     terminalStatuses: config.kanban.terminalStatuses,
     defaultStatusAvailable: availableStatuses.includes(config.kanban.defaultStatus),
     creationPolicy: {
+      repository: creationPolicy.repository,
       projectVisibility: creationPolicy.projectVisibility,
       repositoryVisibility: creationPolicy.repositoryVisibility,
       route: creationPolicy.route
@@ -697,9 +705,10 @@ async function statusCommand(dataDir, flags, positional) {
     metadata = await readProjectMetadata(dataDir, config);
   } catch {}
   const policy = metadata?.creationPolicy;
+  const issueRepository = policy?.repository || (config ? creationRepository(config) : '');
   const creationPolicyLine = policy
-    ? `Creation route: Project ${policy.projectVisibility}, repository ${policy.repositoryVisibility || 'not configured'} -> ${policy.route}.`
-    : 'Creation route: unknown; run check to inspect Project and repository visibility.';
+    ? `Creation route: Project ${policy.projectVisibility}, Issue repository ${issueRepository || 'not configured'} (${policy.repositoryVisibility || 'n/a'}) -> ${policy.route}.`
+    : 'Creation route: unknown; run check to inspect Project and Issue repository visibility.';
   const kanbanStatusLine = metadata?.availableStatuses?.length
     ? `Kanban statuses: ${metadata.availableStatuses.join(', ')}.`
     : 'Kanban statuses: unknown; run check to refresh them.';

@@ -11,8 +11,8 @@ export const DEFAULT_CONFIG = {
     defaultStatus: '',
     terminalStatuses: []
   },
-  defaultRepository: '',
   creation: {
+    repository: '',
     projectVisibility: 'auto',
     repositoryVisibility: 'auto',
     routes: {
@@ -73,13 +73,16 @@ export function selectDefaultStatus(statuses) {
 }
 
 function mergeConfig(raw) {
+  const { defaultRepository: legacyRepository, ...values } = raw;
+  const repository = raw.creation?.repository ?? legacyRepository ?? DEFAULT_CONFIG.creation.repository;
   return {
     ...DEFAULT_CONFIG,
-    ...raw,
+    ...values,
     kanban: { ...DEFAULT_CONFIG.kanban, ...raw.kanban },
     creation: {
       ...DEFAULT_CONFIG.creation,
       ...raw.creation,
+      repository,
       routes: { ...DEFAULT_CONFIG.creation.routes, ...raw.creation?.routes }
     },
     update: { ...DEFAULT_CONFIG.update, ...raw.update },
@@ -115,6 +118,9 @@ export async function loadConfig(file = configPath()) {
       Object.values(config.creation.routes).some(route => !['issue', 'draft'].includes(route))) {
     throw Object.assign(new Error('creation visibility must be auto/public/private and every route must be issue/draft'), { code: 'CONFIG_INVALID' });
   }
+  if (typeof config.creation.repository !== 'string') {
+    throw Object.assign(new Error('creation.repository must use owner/name form or be empty'), { code: 'CONFIG_INVALID' });
+  }
   if (!Array.isArray(config.kanban.terminalStatuses) || config.kanban.terminalStatuses.some(status => typeof status !== 'string')) {
     throw Object.assign(new Error('kanban.terminalStatuses must be an array of status names'), { code: 'CONFIG_INVALID' });
   }
@@ -126,6 +132,10 @@ export async function loadConfig(file = configPath()) {
 
 export function createConfig(values) {
   return mergeConfig(values);
+}
+
+export function creationRepository(config) {
+  return config?.creation?.repository ?? config?.defaultRepository ?? '';
 }
 
 export async function saveConfig(file, config) {

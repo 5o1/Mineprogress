@@ -14,10 +14,10 @@ test('status is offline and reports global route and discovered statuses as sepa
     owner: 'octocat',
     ownerType: 'user',
     projectNumber: 1,
-    defaultRepository: 'octocat/todos',
     statusFieldName: 'Status',
     updateFieldName: 'Update',
-    kanban: { defaultStatus: 'Backlog', terminalStatuses: ['Shipped'] }
+    kanban: { defaultStatus: 'Backlog', terminalStatuses: ['Shipped'] },
+    defaultRepository: 'octocat/todos'
   };
   await fs.writeFile(configFile, JSON.stringify(config));
   await updateProjectMetadata(directory, config, {
@@ -28,7 +28,7 @@ test('status is offline and reports global route and discovered statuses as sepa
   process.env.MINEPROGRESS_CONFIG = configFile;
   t.after(() => { if (previous === undefined) delete process.env.MINEPROGRESS_CONFIG; else process.env.MINEPROGRESS_CONFIG = previous; });
   const result = await run(['status', '--session', 's1', '--data-dir', directory]);
-  assert.equal(result.creationPolicyLine, 'Creation route: Project private, repository public -> draft.');
+  assert.equal(result.creationPolicyLine, 'Creation route: Project private, Issue repository octocat/todos (public) -> draft.');
   assert.equal(result.kanbanStatusLine, 'Kanban statuses: Backlog, Doing, Shipped.');
   assert.equal(result.kanbanPolicyLine, 'Kanban policy: default Backlog; terminal Shipped.');
   assert.equal(result.unresolvedCount, 0);

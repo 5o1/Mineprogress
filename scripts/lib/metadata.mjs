@@ -2,12 +2,13 @@ import crypto from 'node:crypto';
 import fs from 'node:fs/promises';
 import path from 'node:path';
 import { atomicWriteFile } from './atomic-file.mjs';
+import { creationRepository } from './config.mjs';
 
 const METADATA_VERSION = 1;
 
 export function projectCacheKey(config) {
   return crypto.createHash('sha256')
-    .update(`${config.ownerType}:${config.owner}:${config.projectNumber}:${config.defaultRepository || ''}`)
+    .update(`${config.ownerType}:${config.owner}:${config.projectNumber}:${creationRepository(config)}`)
     .digest('hex');
 }
 

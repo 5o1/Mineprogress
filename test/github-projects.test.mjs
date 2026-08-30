@@ -9,8 +9,8 @@ const config = {
   statusFieldName: 'Status',
   updateFieldName: 'Update',
   kanban: { defaultStatus: 'Todo', terminalStatuses: ['Done'] },
-  defaultRepository: 'octocat/todos',
   creation: {
+    repository: 'octocat/todos',
     projectVisibility: 'auto',
     repositoryVisibility: 'auto',
     routes: {

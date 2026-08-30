@@ -2,7 +2,6 @@
   "owner": "your-github-login",
   "ownerType": "user",
   "projectNumber": 1,
-  "defaultRepository": "your-github-login/private-todos",
   "statusFieldName": "Status",
   "updateFieldName": "Update",
   "kanban": {
@@ -10,6 +9,7 @@
     "terminalStatuses": ["Done"]
   },
   "creation": {
+    "repository": "your-github-login/private-todos",
     "projectVisibility": "auto",
     "repositoryVisibility": "auto",
     "routes": {

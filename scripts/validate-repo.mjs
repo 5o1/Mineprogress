@@ -63,6 +63,9 @@ if (example.creation?.routes?.private_public !== 'draft' ||
     ['public_private', 'public_public', 'private_private'].some(key => example.creation?.routes?.[key] !== 'issue')) {
   errors.push('Default creation visibility matrix is invalid.');
 }
+if (typeof example.creation?.repository !== 'string' || 'defaultRepository' in example) {
+  errors.push('Example config must use creation.repository rather than legacy defaultRepository.');
+}
 if ('statusValues' in example) errors.push('Kanban statuses must be discovered, not hard-coded.');
 if ([readme, configuration, workflow, development].some(document => /[\u3400-\u9fff]/u.test(document))) {
   errors.push('README and docs must remain in English.');

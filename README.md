@@ -11,10 +11,10 @@ active GitHub CLI login automatically:
 $mineprogress:init
 ```
 
-The guide asks for a GitHub Project URL, uses its linked repository automatically, initializes the
-plugin, and reports the resulting statuses, visibility, and creation behavior. It asks which
-repository to use only when the Project links several. No configuration file is added to the
-working repository.
+The guide asks for a GitHub Project URL and reports the resulting statuses, visibility, and creation
+behavior. GitHub permits one default repository but does not expose it through the public GraphQL
+API. Mineprogress uses a sole linked repository as its Issue repository; if several are linked, it
+asks which one to use. No configuration file is added to the working repository.
 
 Mineprogress uses an explicit Codex Skill command:
 

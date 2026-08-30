@@ -3,10 +3,10 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
-import { parseProjectUrl, resolveInitializationRepository } from '../scripts/mineprogress.mjs';
+import { parseProjectUrl, resolveInitializationCreationRepository } from '../scripts/mineprogress.mjs';
 import { run } from '../scripts/mineprogress.mjs';
 import { readProjectMetadata } from '../scripts/lib/metadata.mjs';
-import { detectTerminalStatuses, selectDefaultStatus } from '../scripts/lib/config.mjs';
+import { createConfig, detectTerminalStatuses, selectDefaultStatus } from '../scripts/lib/config.mjs';
 
 test('Kanban defaults prefer a starting status and detect conventional terminal statuses', () => {
   const statuses = ['In progress', 'Todo', 'In review', 'Done'];
@@ -29,13 +29,13 @@ test('guided initialization rejects non-GitHub and malformed Project URLs', () =
   assert.throws(() => parseProjectUrl('https://github.com/a/projects/1'), { code: 'PROJECT_URL_INVALID' });
 });
 
-test('guided initialization uses the sole repository linked to the Project', () => {
-  const result = resolveInitializationRepository({}, { repositories: { nodes: [
+test('guided initialization may use the sole linked repository without calling it the Project default', () => {
+  const result = resolveInitializationCreationRepository({}, { repositories: { nodes: [
     { nameWithOwner: 'octocat/todos', visibility: 'PUBLIC' }
   ] } });
   assert.deepEqual(result, {
-    defaultRepository: 'octocat/todos',
-    source: 'project',
+    repository: 'octocat/todos',
+    source: 'sole-linked',
     candidates: [{ nameWithOwner: 'octocat/todos', visibility: 'public' }],
     selectionRequired: false
   });
@@ -46,15 +46,26 @@ test('guided initialization requires a choice only for multiple linked repositor
     { nameWithOwner: 'octocat/one', visibility: 'PRIVATE' },
     { nameWithOwner: 'octocat/two', visibility: 'PUBLIC' }
   ] } };
-  const ambiguous = resolveInitializationRepository({}, project);
+  const ambiguous = resolveInitializationCreationRepository({}, project);
   assert.equal(ambiguous.selectionRequired, true);
   assert.deepEqual(ambiguous.candidates.map(candidate => candidate.nameWithOwner), ['octocat/one', 'octocat/two']);
-  assert.deepEqual(resolveInitializationRepository({ 'no-repository': true }, project), {
-    defaultRepository: '',
+  assert.deepEqual(resolveInitializationCreationRepository({ 'no-repository': true }, project), {
+    repository: '',
     source: 'explicit-none',
     candidates: ambiguous.candidates,
     selectionRequired: false
   });
+});
+
+test('legacy defaultRepository config migrates to creation.repository', () => {
+  const migrated = createConfig({ defaultRepository: 'octocat/todos' });
+  assert.equal(migrated.creation.repository, 'octocat/todos');
+  assert.equal('defaultRepository' in migrated, false);
+  const current = createConfig({
+    defaultRepository: 'octocat/legacy',
+    creation: { repository: 'octocat/current' }
+  });
+  assert.equal(current.creation.repository, 'octocat/current');
 });
 
 test('initialization writes config and global metadata without a preview phase', async t => {
@@ -103,10 +114,14 @@ test('initialization writes config and global metadata without a preview phase',
   assert.equal(result.updateFieldCreated, true);
   const saved = JSON.parse(await fs.readFile(path.join(dataDir, 'config.json'), 'utf8'));
   assert.equal(saved.owner, 'octocat');
+  assert.equal(saved.creation.repository, 'octocat/todos');
+  assert.equal('defaultRepository' in saved, false);
   assert.equal(saved.kanban.defaultStatus, 'Todo');
   assert.deepEqual(saved.kanban.terminalStatuses, ['Done']);
   assert.equal(result.defaultStatus, 'Todo');
   assert.equal(result.defaultStatusSource, 'detected');
+  assert.equal(result.creationRepository, 'octocat/todos');
+  assert.equal(result.creationRepositorySource, 'explicit');
   const metadata = await readProjectMetadata(dataDir, saved);
   assert.deepEqual(metadata.availableStatuses, ['Doing', 'Todo', 'Done']);
   assert.equal(metadata.creationPolicy.route, 'draft');
