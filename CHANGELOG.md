@@ -28,3 +28,5 @@ Notable user-visible changes are documented here. Entries follow
   rejected before they can replace Project content.
 - Incompatible unsubmitted plans are discarded locally and scheduled for full-history regeneration;
   plans with a prior submission attempt remain available for safe reconciliation.
+- Empty incremental results now advance the planning checkpoint while retaining an existing queued
+  plan, instead of exhausting review retries or discarding approved content.

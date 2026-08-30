@@ -131,6 +131,10 @@ export async function runBackgroundUpdate(dataDir, sessionId, {
       } finally {
         await planInput.cleanup();
       }
+      if (staged.noop) {
+        if (await settleBackgroundRequest(dataDir, sessionId)) continue;
+        return { outcome: 'noop', ...staged };
+      }
       if (!staged.accepted) {
         if (staged.paused) return { outcome: 'submission_unverified' };
         if (staged.exhausted) return { outcome: 'exhausted', errors: staged.errors };

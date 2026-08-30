@@ -60,3 +60,40 @@ test('background worker generates and reviews a plan without submitting it', asy
   assert.match(prompts[1], /proposedPlan/);
   assert.match(prompts[1], /Reviewer checklist/);
 });
+
+test('background worker skips review for an accepted incremental no-op', async t => {
+  const dataDir = await fs.mkdtemp(path.join(os.tmpdir(), 'mineprogress-background-noop-'));
+  t.after(() => fs.rm(dataDir, { recursive: true, force: true }));
+  const calls = [];
+  let modelCalls = 0;
+  const runCommand = async argv => {
+    calls.push(argv.slice(0, 2).join(' '));
+    if (argv[1] === 'prepare') {
+      return {
+        outcome: 'generate_and_review',
+        prompt: 'Update contract',
+        existingPlan: { updates: [{ itemId: 'PVTI_1', summary: 'Queued work.' }] },
+        availableStatuses: ['Todo'],
+        boundItems: [{ itemId: 'PVTI_1', title: 'Parser' }],
+        context: [{ sequence: 2, kind: 'user', text: 'Check.' }],
+        useThreadHistory: false,
+        promptNames: ['update'],
+        planningDate: '2026-08-30',
+        model: { model: 'gpt-5.6-luna', reasoningEffort: 'medium' },
+        reviewModel: { model: 'gpt-5.6-luna', reasoningEffort: 'medium' }
+      };
+    }
+    if (argv[1] === 'stage') return { accepted: true, noop: true, pendingRetained: true };
+    throw new Error(`Unexpected command: ${argv.join(' ')}`);
+  };
+  const invokeModel = async () => {
+    modelCalls++;
+    return { updates: [] };
+  };
+
+  const result = await runBackgroundUpdate(dataDir, 'session-1', { runCommand, invokeModel });
+  assert.equal(result.outcome, 'noop');
+  assert.equal(result.pendingRetained, true);
+  assert.equal(modelCalls, 1);
+  assert.deepEqual(calls, ['update prepare', 'update stage']);
+});

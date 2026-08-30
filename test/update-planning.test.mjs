@@ -86,6 +86,22 @@ test('reviewed incremental plan is stored before one later GitHub submission', a
   assert.equal(pendingState.pendingPlan.plan.updates.length, 1);
   assert.equal(pendingState.pendingPlan.operations.find(operation => operation.kind === 'status').before, 'Todo');
 
+  const originalPendingPlan = structuredClone(pendingState.pendingPlan);
+  appendJournal(pendingState, { kind: 'user', turnId: 'turn-2', text: 'Check.' });
+  await writeState(dataDir, pendingState);
+  const noOpPrepared = await run(['update', 'prepare', '--session', 'session-1', '--data-dir', dataDir]);
+  assert.deepEqual(noOpPrepared.existingPlan, originalPendingPlan.plan);
+  const noOpFile = path.join(dataDir, 'noop-plan.json');
+  await fs.writeFile(noOpFile, JSON.stringify({ updates: [] }));
+  const noOp = await run(['update', 'stage', '--plan', noOpFile, '--session', 'session-1', '--data-dir', dataDir]);
+  assert.equal(noOp.accepted, true);
+  assert.equal(noOp.noop, true);
+  assert.equal(noOp.pendingRetained, true);
+  const afterNoOp = await readState(dataDir, 'session-1');
+  assert.deepEqual(afterNoOp.pendingPlan, originalPendingPlan);
+  assert.equal(afterNoOp.activeUpdate, null);
+  assert.equal(afterNoOp.lastPlannedUpdate.sequence, 3);
+
   const submitted = await submitPendingUpdate(dataDir, 'session-1', { verify: false });
   assert.equal(submitted.submitted, true);
   assert.equal(submitted.verified, false);
@@ -99,5 +115,5 @@ test('reviewed incremental plan is stored before one later GitHub submission', a
   const finalState = await readState(dataDir, 'session-1');
   assert.equal(finalState.pendingPlan, null);
   assert.equal(finalState.lastSuccessfulUpdate.sequence, 2);
-  assert.equal(projectReads, 3);
+  assert.equal(projectReads, 4);
 });

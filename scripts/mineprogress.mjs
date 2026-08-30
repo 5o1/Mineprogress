@@ -452,6 +452,8 @@ async function stageUpdate(dataDir, sessionId, flags) {
       return { accepted: false, exhausted: true, attempt: state.activeUpdate.attempt, errors: ['Maximum content attempts already reached.'] };
     }
     state.activeUpdate.attempt++;
+    const incrementalNoop = !state.activeUpdate.useThreadHistory &&
+      Array.isArray(plan?.updates) && plan.updates.length === 0;
     const report = validatePlan(plan, {
       boundItems: state.activeUpdate.projectSnapshot.normalizedItems,
       allowedStatuses: metadata.availableStatuses,
@@ -459,13 +461,21 @@ async function stageUpdate(dataDir, sessionId, flags) {
       maxWords: config.update.maxSummaryWords,
       maxBodyCharacters: config.update.maxBodyCharacters,
       maxCommentCharacters: config.update.maxCommentCharacters,
-      existingPlan: state.pendingPlan?.plan || { updates: [] }
+      existingPlan: incrementalNoop ? { updates: [] } : state.pendingPlan?.plan || { updates: [] }
     });
     if (!report.valid) {
       state.activeUpdate.stagedPlan = null;
       const exhausted = await exhaustIfNeeded(dataDir, state, config, 'static-validation', report.errors.join(' '));
       await writeState(dataDir, state);
       return { accepted: false, exhausted, attempt: state.activeUpdate.attempt, errors: report.errors };
+    }
+    if (incrementalNoop) {
+      const runId = state.activeUpdate.runId;
+      const attempt = state.activeUpdate.attempt;
+      const pendingRetained = Boolean(state.pendingPlan);
+      completeUpdate(state, runId);
+      await writeState(dataDir, state);
+      return { accepted: true, noop: true, pendingRetained, attempt, planningCheckpointAdvanced: true };
     }
     state.activeUpdate.stagedPlan = plan;
     state.activeUpdate.staticReport = report;

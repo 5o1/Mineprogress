@@ -39,6 +39,10 @@ incrementally maintains one reviewed but unsubmitted plan:
    separate runtime file rather than part of global Skill discovery.
 4. Store the approved plan without writing GitHub. A rejection regenerates it, up to five rounds.
 
+An empty incremental result contains no content to review: Mineprogress advances that run's planning
+checkpoint and retains any previously reviewed submission unchanged. Full-history backfills still
+use the normal validation and review path even when a generator returns an empty plan.
+
 The first full-history pass loads `prompts/create.md` for newly created items or `prompts/bind.md`
 for existing items. Later passes load `prompts/update.md`. These files are passed only to ephemeral
 generator processes and do not enter the foreground thread's global prompt. An Issue or Draft body
