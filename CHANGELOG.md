@@ -17,6 +17,8 @@ Notable user-visible changes are documented here. Entries follow
   overwriting journal events that arrived during GitHub network I/O.
 - Generate and validate missing Project status rules automatically before processing a durable
   status intent, including after remote status configuration changes.
+- Avoid treating future test instructions or bare Chinese completion noun phrases as completed-item
+  declarations; Chinese assertions must carry an explicit completed aspect.
 
 ## [0.6.0] - 2026-08-30
 

@@ -15,6 +15,8 @@ test('completion intent accepts assertions and rejects plans or conditions', () 
   assert.equal(isCompletionDeclaration('当前任务已经完成'), true);
   assert.equal(isCompletionDeclaration('This project is complete.'), true);
   assert.equal(isCompletionDeclaration('将会完成这个todo。'), false);
+  assert.equal(isCompletionDeclaration('接下来再测试一次任务完成，你先在上下文中提供所需的证据'), false);
+  assert.equal(isCompletionDeclaration('任务完成情况需要进一步验证。'), false);
   assert.equal(isCompletionDeclaration('When the tests pass, the task will be complete.'), false);
   assert.equal(isCompletionDeclaration('How should we complete this project?'), false);
 });
