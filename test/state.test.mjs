@@ -9,6 +9,7 @@ import {
   beginUpdate,
   bindItem,
   completeUpdate,
+  completeSubmission,
   controlCommandAction,
   isControlPrompt,
   openSession,
@@ -18,6 +19,7 @@ import {
   requireCommandAuthorization,
   retryExhaustedUpdate,
   statePath,
+  storePendingPlan,
   unbindItem,
   writeState
 } from '../scripts/lib/state.mjs';
@@ -37,7 +39,7 @@ test('thread state is isolated by hashed session id and restored', async t => {
   assert.equal(second.restored, true);
 });
 
-test('binding is explicit and successful update advances incremental checkpoint', async t => {
+test('planning and submission advance separate incremental checkpoints', async t => {
   const dataDir = await temporaryData(t);
   const { state } = await openSession(dataDir, 's1');
   assert.equal(bindItem(state, { itemId: 'PVTI_1', title: 'Ship' }), true);
@@ -46,9 +48,19 @@ test('binding is explicit and successful update advances incremental checkpoint'
   appendJournal(state, { kind: 'assistant', turnId: 't1', text: 'Tests pass.' });
   const run = beginUpdate(state, 'run-1');
   assert.equal(run.toSequence, 2);
-  completeUpdate(state, 'run-1');
+  storePendingPlan(state, 'run-1', {
+    updates: [{ itemId: 'PVTI_1', summary: 'Parser implemented and tested.' }]
+  }, {
+    projectId: 'PVT_1',
+    operations: [{ itemId: 'PVTI_1', fieldId: 'PVTF_UPDATE', value: { text: 'Parser implemented and tested.' } }]
+  }, { decision: 'approve', reason: 'Relevant.' });
   assert.deepEqual(pendingJournal(state), []);
+  assert.equal(state.lastPlannedUpdate.sequence, 2);
+  assert.equal(state.lastSuccessfulUpdate, null);
+  assert.equal(state.pendingPlan.plan.updates.length, 1);
+  completeSubmission(state);
   assert.equal(state.lastSuccessfulUpdate.sequence, 2);
+  assert.equal(state.pendingPlan, null);
   assert.equal(unbindItem(state, 'PVTI_1'), true);
   await writeState(dataDir, state);
   assert.deepEqual((await readState(dataDir, 's1')).boundItems, []);
@@ -124,7 +136,9 @@ function newStateForTest() {
     journal: [],
     controlTurnIds: [],
     nextSequence: 1,
+    lastPlannedUpdate: null,
     lastSuccessfulUpdate: null,
+    pendingPlan: null,
     activeUpdate: null
   };
 }

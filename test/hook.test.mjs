@@ -109,6 +109,31 @@ test('hooks journal and Stop blocks only for bound incremental work', async t =>
   assert.equal(guarded.stdout, '');
 });
 
+test('Stop does not revise a plan while an earlier submission is unverified', async t => {
+  const dataDir = await fs.mkdtemp(path.join(os.tmpdir(), 'mineprogress-hook-unverified-'));
+  t.after(() => fs.rm(dataDir, { recursive: true, force: true }));
+  await markInitialized(dataDir);
+  const { state } = await openSession(dataDir, 'session-unverified');
+  bindItem(state, { itemId: 'PVTI_1', title: 'Parser' });
+  state.pendingPlan = {
+    plan: { updates: [{ itemId: 'PVTI_1', summary: 'Pending.' }] },
+    projectId: 'PVT_1',
+    operations: [{ key: 'operation-1', itemId: 'PVTI_1', kind: 'summary', before: null, expected: 'Pending.', fieldId: 'UPDATE', value: { text: 'Pending.' } }],
+    throughSequence: 1,
+    submissionStatus: 'unverified',
+    attempts: [{ attemptId: 'attempt-1', operationKeys: ['operation-1'], startedAt: new Date().toISOString(), responseReceivedAt: null }]
+  };
+  await writeState(dataDir, state);
+  invoke('user-prompt', { session_id: 'session-unverified', turn_id: 'turn-2', prompt: 'More work.' }, dataDir);
+  const stopped = invoke('stop', { session_id: 'session-unverified', turn_id: 'turn-2', last_assistant_message: 'More done.' }, dataDir);
+  assert.equal(stopped.status, 0, stopped.stderr);
+  assert.equal(stopped.stdout, '');
+  const restored = await readState(dataDir, 'session-unverified');
+  assert.equal(restored.activeUpdate, null);
+  assert.equal(restored.pendingPlan.attempts.length, 1);
+  assert.equal(restored.journal.length, 2);
+});
+
 test('UserPromptSubmit records authorization for an explicit mutating command', async t => {
   const dataDir = await fs.mkdtemp(path.join(os.tmpdir(), 'mineprogress-hook-auth-'));
   t.after(() => fs.rm(dataDir, { recursive: true, force: true }));

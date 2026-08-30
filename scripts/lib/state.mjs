@@ -31,9 +31,17 @@ export function newState(sessionId, now = new Date().toISOString()) {
     controlTurnIds: [],
     pendingAuthorizations: [],
     nextSequence: 1,
+    lastPlannedUpdate: null,
     lastSuccessfulUpdate: null,
+    pendingPlan: null,
     activeUpdate: null
   };
+}
+
+function normalizeState(state) {
+  state.lastPlannedUpdate ??= state.lastSuccessfulUpdate || null;
+  state.pendingPlan ??= null;
+  return state;
 }
 
 export async function readState(dataDir, sessionId) {
@@ -43,7 +51,7 @@ export async function readState(dataDir, sessionId) {
     if (state.version !== STATE_VERSION || state.sessionId !== sessionId) {
       throw Object.assign(new Error('Thread state is incompatible or belongs to another session'), { code: 'STATE_INVALID' });
     }
-    return state;
+    return normalizeState(state);
   } catch (error) {
     if (error.code === 'ENOENT') return null;
     throw error;
@@ -142,11 +150,16 @@ export function bindItem(state, item) {
 export function unbindItem(state, itemId) {
   const before = state.boundItems.length;
   state.boundItems = state.boundItems.filter(item => item.itemId !== itemId);
+  if (state.pendingPlan?.plan?.updates) {
+    state.pendingPlan.plan.updates = state.pendingPlan.plan.updates.filter(update => update.itemId !== itemId);
+    state.pendingPlan.operations = (state.pendingPlan.operations || []).filter(operation => operation.itemId !== itemId);
+    if (!state.pendingPlan.plan.updates.length) state.pendingPlan = null;
+  }
   return state.boundItems.length !== before;
 }
 
 export function pendingJournal(state) {
-  const after = state.lastSuccessfulUpdate?.sequence || 0;
+  const after = state.lastPlannedUpdate?.sequence || state.lastSuccessfulUpdate?.sequence || 0;
   return state.journal.filter(event => event.sequence > after);
 }
 
@@ -157,7 +170,7 @@ export function beginUpdate(state, runId = crypto.randomUUID()) {
   const toSequence = events.at(-1).sequence;
   state.activeUpdate = {
     runId,
-    fromSequence: state.lastSuccessfulUpdate?.sequence || 0,
+    fromSequence: state.lastPlannedUpdate?.sequence || state.lastSuccessfulUpdate?.sequence || 0,
     toSequence,
     attempt: 0,
     stagedPlan: null,
@@ -204,7 +217,57 @@ export function completeUpdate(state, runId) {
     throw Object.assign(new Error('The update run is not active'), { code: 'UPDATE_RUN_MISMATCH' });
   }
   const sequence = state.activeUpdate.toSequence;
-  state.lastSuccessfulUpdate = { sequence, runId, completedAt: new Date().toISOString() };
+  state.lastPlannedUpdate = { sequence, runId, completedAt: new Date().toISOString() };
   state.journal = state.journal.filter(event => event.sequence > sequence);
   state.activeUpdate = null;
+}
+
+export function storePendingPlan(state, runId, plan, submission, review) {
+  if (!state.activeUpdate || state.activeUpdate.runId !== runId) {
+    throw Object.assign(new Error('The update run is not active'), { code: 'UPDATE_RUN_MISMATCH' });
+  }
+  const sequence = state.activeUpdate.toSequence;
+  state.pendingPlan = submission.operations.length ? {
+    plan,
+    projectId: submission.projectId,
+    operations: submission.operations,
+    throughSequence: sequence,
+    approvedAt: new Date().toISOString(),
+    submissionStatus: 'ready',
+    attempts: [],
+    review
+  } : null;
+  completeUpdate(state, runId);
+  return state.pendingPlan;
+}
+
+export function beginSubmissionAttempt(state, operationKeys) {
+  if (!state.pendingPlan) throw Object.assign(new Error('No reviewed plan is pending.'), { code: 'PLAN_NOT_PENDING' });
+  const attempt = {
+    attemptId: crypto.randomUUID(),
+    operationKeys: [...operationKeys],
+    startedAt: new Date().toISOString(),
+    responseReceivedAt: null
+  };
+  state.pendingPlan.submissionStatus = 'unverified';
+  state.pendingPlan.attempts ||= [];
+  state.pendingPlan.attempts.push(attempt);
+  return attempt;
+}
+
+export function confirmSubmissionResponse(state, attemptId) {
+  const attempt = state.pendingPlan?.attempts?.find(candidate => candidate.attemptId === attemptId);
+  if (!attempt) throw Object.assign(new Error('Submission attempt was not found.'), { code: 'SUBMISSION_ATTEMPT_NOT_FOUND' });
+  attempt.responseReceivedAt = new Date().toISOString();
+  return attempt;
+}
+
+export function completeSubmission(state) {
+  if (!state.pendingPlan) return false;
+  state.lastSuccessfulUpdate = {
+    sequence: state.pendingPlan.throughSequence,
+    completedAt: new Date().toISOString()
+  };
+  state.pendingPlan = null;
+  return true;
 }

@@ -23,27 +23,34 @@ update content.
 
 ## Automatic update
 
-Stop and manual `$mineprogress:update` use the same workflow:
+Stop incrementally maintains one reviewed but unsubmitted plan:
 
-1. Select only the journal after the last successful checkpoint and currently bound items.
-2. Generate a restricted JSON plan, then locally check fields, bound IDs, actual statuses, size, and
-   obvious personal information.
+1. Select only the journal after the last planning checkpoint and the previously approved plan.
+2. Generate one consolidated replacement plan, then locally check fields, bound IDs, actual
+   statuses, size, and obvious personal information.
 3. Ask an independent reviewer subagent to detect context dumping, irrelevant expansion, static
    failures, unsupported claims, and author-identifying data.
-4. Write to GitHub only after approval. A rejection regenerates the plan, up to five total rounds.
+4. Store the approved plan without writing GitHub. A rejection regenerates it, up to five rounds.
 
-An approved no-op advances the checkpoint. Partial GitHub writes retain idempotent operation keys
-but do not advance it. Token, permission, network, configuration, model, or subagent failures stop
-immediately without consuming a content retry. An explicit sandbox denial requests one elevated
-retry of the same command.
+`SessionEnd` performs no model work. It records an attempt and submits the latest reviewed plan as
+one batched GraphQL mutation, but treats the result as unverified and never removes the queue entry.
+On resume, Mineprogress reads the actual Project fields: target values confirm success, unchanged
+baseline values are safe to retry, and any third value is an external-edit conflict that is not
+overwritten. Only complete read-back confirmation removes the plan and advances the submission
+checkpoint. Manual `$mineprogress:update` submits and verifies immediately.
+
+An approved no-op advances only the planning checkpoint. Token, permission, network, configuration,
+model, or subagent failures stop immediately without consuming a content retry. An explicit sandbox
+denial requests one elevated retry when an interactive command can request it.
 
 After five rejected rounds, automatic processing remains suspended and the checkpoint stays put.
 Only an explicit user-requested `update retry` starts a fresh run over that same pending journal.
 
 ## Error state
 
-`status` folds JSONL locally and returns at most 20 unresolved summaries for the current thread. It
-does not query GitHub or expose the complete log, stack traces, tokens, personal paths, or journal.
+`status` folds JSONL locally, reports whether a reviewed submission is ready or unverified, and
+returns at most 20 unresolved summaries for the current thread. It does not query GitHub or expose
+the complete log, stack traces, tokens, personal paths, or journal.
 `status resolve <errorId>` appends a resolution event without rewriting history.
 
 Ended thread caches are retained for 30 days to support resume, then pruned from `PLUGIN_DATA` on a

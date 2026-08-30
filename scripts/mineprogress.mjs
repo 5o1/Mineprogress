@@ -7,26 +7,32 @@ import { configPath, createConfig, loadConfig, saveConfig } from './lib/config.m
 import { resolveGithubToken } from './lib/auth.mjs';
 import { suggestBindings } from './lib/check.mjs';
 import {
-  applyUpdatePlan,
+  applyPreparedOperations,
   createTextField,
   createKanbanItem,
   inspectCreationPolicy,
   makeClient,
+  prepareUpdateOperations,
   projectStatusOptions,
-  readProject
+  readProject,
+  reconcilePreparedOperations
 } from './lib/github-projects.mjs';
 import { classifyError, logError, resolveError, unresolvedErrors } from './lib/errors.mjs';
 import { readProjectMetadata, updateProjectMetadata } from './lib/metadata.mjs';
 import {
   beginUpdate,
+  beginSubmissionAttempt,
   bindItem,
   completeUpdate,
+  completeSubmission,
+  confirmSubmissionResponse,
   openSession,
   pendingJournal,
   readState,
   requireCommandAuthorization,
   requireDataDir,
   retryExhaustedUpdate,
+  storePendingPlan,
   unbindItem,
   writeState
 } from './lib/state.mjs';
@@ -288,13 +294,21 @@ async function checkCommand(dataDir, flags) {
 
 async function prepareUpdate(dataDir, sessionId) {
   const { state } = await openSession(dataDir, sessionId);
+  if (state.pendingPlan?.attempts?.length) {
+    return { outcome: 'submission_unverified', reason: 'Verify the earlier submission with update submit before revising the plan.' };
+  }
   const run = beginUpdate(state);
-  if (!run) return { outcome: 'noop', reason: 'No context exists after the last successful update.' };
+  if (!run) {
+    if (state.pendingPlan) {
+      return { outcome: 'pending_submission', updates: state.pendingPlan.plan.updates.length, throughSequence: state.pendingPlan.throughSequence };
+    }
+    return { outcome: 'noop', reason: 'No context exists after the last planned update.' };
+  }
   if (run.exhausted) {
     return { outcome: 'exhausted', runId: run.runId, errorId: run.exhaustionErrorId, reason: 'Content attempts are suspended. Use update retry only after the user explicitly requests another run.' };
   }
   if (run.approvedReview?.decision === 'approve' && run.stagedPlan) {
-    return { outcome: 'resume_apply', sessionId, runId: run.runId, reason: 'Resume the approved idempotent transaction with update apply; no new review is required.' };
+    return { outcome: 'resume_apply', sessionId, runId: run.runId, reason: 'Store the already approved consolidated plan with update apply; no new review is required.' };
   }
   if (!state.boundItems.length) {
     completeUpdate(state, run.runId);
@@ -307,6 +321,11 @@ async function prepareUpdate(dataDir, sessionId) {
   await updateProjectMetadata(dataDir, config, { availableStatuses });
   const boundIds = new Set(state.boundItems.map(item => item.itemId));
   const prompt = await fs.readFile(path.join(ROOT, 'prompts', 'update.md'), 'utf8');
+  state.activeUpdate.projectSnapshot = {
+    id: project.id,
+    fields: project.fields,
+    normalizedItems: project.normalizedItems
+  };
   await writeState(dataDir, state);
   return {
     outcome: 'generate_and_review',
@@ -318,8 +337,9 @@ async function prepareUpdate(dataDir, sessionId) {
     reviewModel: config.models.review,
     preferFastMode: config.models.preferFastMode,
     prompt,
+    existingPlan: state.pendingPlan?.plan || { updates: [] },
     availableStatuses,
-    allowedOutput: { updates: [{ itemId: 'bound-id', status: 'exact available status name', summary: 'concise redacted update' }] },
+    allowedOutput: { updates: [{ itemId: 'bound-id', status: 'exact available status name', summary: 'consolidated concise redacted update' }] },
     boundItems: project.normalizedItems.filter(item => boundIds.has(item.itemId)),
     context: pendingJournal(state).filter(event => event.sequence <= run.toSequence)
   };
@@ -402,21 +422,84 @@ async function applyUpdate(dataDir, sessionId, flags) {
   const runId = state.activeUpdate.runId;
   state.activeUpdate.approvedReview = review;
   await writeState(dataDir, state);
-  if (!state.activeUpdate.stagedPlan.updates.length) {
-    completeUpdate(state, runId);
-    await writeState(dataDir, state);
-    return { applied: true, fieldUpdates: 0, checkpointAdvanced: true };
-  }
-  const result = await applyUpdatePlan(config, await githubClient(), state.activeUpdate.stagedPlan, {
-    alreadyApplied: state.activeUpdate.appliedOperations,
-    onApplied: async key => {
-      state.activeUpdate.appliedOperations.push(key);
-      await writeState(dataDir, state);
-    }
-  });
-  completeUpdate(state, runId);
+  const projectSnapshot = state.activeUpdate.projectSnapshot || await readProject(config, await githubClient());
+  const submission = prepareUpdateOperations(config, projectSnapshot, state.activeUpdate.stagedPlan);
+  const pending = storePendingPlan(state, runId, state.activeUpdate.stagedPlan, submission, review);
   await writeState(dataDir, state);
-  return { applied: true, fieldUpdates: result.applied, checkpointAdvanced: true };
+  return {
+    planned: true,
+    queuedUpdates: pending?.plan.updates.length || 0,
+    queuedOperations: pending?.operations.length || 0,
+    planningCheckpointAdvanced: true
+  };
+}
+
+async function sendPendingOperations(dataDir, state, operations) {
+  const attempt = beginSubmissionAttempt(state, operations.map(operation => operation.key));
+  await writeState(dataDir, state);
+  const result = await applyPreparedOperations(await githubClient(), state.pendingPlan.projectId, operations);
+  confirmSubmissionResponse(state, attempt.attemptId);
+  await writeState(dataDir, state);
+  return result;
+}
+
+export async function reconcilePendingUpdate(dataDir, sessionId, { retry = true } = {}) {
+  const state = await readState(dataDir, sessionId);
+  if (!state) return { submitted: false, reason: 'Thread cache does not exist.' };
+  if (!state.pendingPlan) return { submitted: false, reason: 'No reviewed plan is pending.' };
+  const config = await pluginConfig(dataDir);
+  let project = await readProject(config, await githubClient());
+  let report = reconcilePreparedOperations(project, state.pendingPlan.operations);
+  if (retry && report.retryable.length) {
+    await sendPendingOperations(dataDir, state, report.retryable);
+    project = await readProject(config, await githubClient());
+    report = reconcilePreparedOperations(project, state.pendingPlan.operations);
+  }
+  if (!report.retryable.length && !report.conflicts.length) {
+    const fieldUpdates = report.confirmed.length;
+    completeSubmission(state);
+    await writeState(dataDir, state);
+    return { submitted: true, verified: true, fieldUpdates, checkpointAdvanced: true };
+  }
+  state.pendingPlan.lastReconciliation = {
+    checkedAt: new Date().toISOString(),
+    confirmed: report.confirmed.map(operation => operation.key),
+    retryable: report.retryable.map(operation => operation.key),
+    conflicts: report.conflicts.map(({ operation }) => operation.key)
+  };
+  await writeState(dataDir, state);
+  if (report.conflicts.length && !state.pendingPlan.conflictLoggedAt) {
+    await logError(dataDir, {
+      sessionId,
+      stage: 'submission-reconciliation',
+      errorCode: 'SUBMISSION_CONFLICT',
+      message: `${report.conflicts.length} pending Project field operation(s) conflict with external changes.`
+    });
+    state.pendingPlan.conflictLoggedAt = new Date().toISOString();
+    await writeState(dataDir, state);
+  }
+  return {
+    submitted: false,
+    verified: false,
+    confirmed: report.confirmed.length,
+    retryable: report.retryable.length,
+    conflicts: report.conflicts.length
+  };
+}
+
+export async function submitPendingUpdate(dataDir, sessionId, { verify = true } = {}) {
+  const state = await readState(dataDir, sessionId);
+  if (!state) return { submitted: false, reason: 'Thread cache does not exist.' };
+  if (!state.pendingPlan) return { submitted: false, reason: 'No reviewed plan is pending.' };
+  if (state.pendingPlan.attempts?.length) {
+    if (verify) return reconcilePendingUpdate(dataDir, sessionId);
+    return { submitted: false, verified: false, reason: 'An earlier submission is still unverified.', queueRetained: true };
+  }
+  const result = await sendPendingOperations(dataDir, state, state.pendingPlan.operations);
+  if (!verify) {
+    return { submitted: true, verified: false, fieldUpdates: result.applied, queueRetained: true };
+  }
+  return reconcilePendingUpdate(dataDir, sessionId, { retry: false });
 }
 
 async function updateCommand(dataDir, flags, positional) {
@@ -434,6 +517,7 @@ async function updateCommand(dataDir, flags, positional) {
   }
   if (action === 'stage') return stageUpdate(dataDir, sessionId, flags);
   if (action === 'apply') return applyUpdate(dataDir, sessionId, flags);
+  if (action === 'submit') return submitPendingUpdate(dataDir, sessionId);
   throw Object.assign(new Error(`Unknown update action: ${action}`), { code: 'UPDATE_ACTION_INVALID' });
 }
 
@@ -452,6 +536,7 @@ async function statusCommand(dataDir, flags, positional) {
   const all = Boolean(flags.all);
   const sessionId = all ? undefined : requiredSession(flags);
   const errors = await unresolvedErrors(dataDir, { sessionId, all, limit: Number(flags.limit || 20) });
+  const state = sessionId ? await readState(dataDir, sessionId) : null;
   let metadata = null;
   try { metadata = await readProjectMetadata(dataDir, await pluginConfig(dataDir)); } catch {}
   const policy = metadata?.creationPolicy;
@@ -461,7 +546,10 @@ async function statusCommand(dataDir, flags, positional) {
   const kanbanStatusLine = metadata?.availableStatuses?.length
     ? `Kanban statuses: ${metadata.availableStatuses.join(', ')}.`
     : 'Kanban statuses: unknown; run check to refresh them.';
-  return { scope: all ? 'all sessions' : sessionId, creationPolicyLine, kanbanStatusLine, unresolvedCount: errors.length, errors };
+  const pendingPlanLine = state?.pendingPlan
+    ? `Pending submission: ${state.pendingPlan.plan.updates.length} item update(s), ${state.pendingPlan.operations.length} field operation(s), ${state.pendingPlan.submissionStatus}.`
+    : 'Pending submission: none.';
+  return { scope: all ? 'all sessions' : sessionId, creationPolicyLine, kanbanStatusLine, pendingPlanLine, unresolvedCount: errors.length, errors };
 }
 
 async function recordErrorCommand(dataDir, flags) {

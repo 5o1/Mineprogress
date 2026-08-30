@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { applyUpdatePlan, createDraftItem, createKanbanItem, createTextField, makeClient, normalizeProjectItem, readProject, selectCreationRoute } from '../scripts/lib/github-projects.mjs';
+import { applyPreparedOperations, applyUpdatePlan, createDraftItem, createKanbanItem, createTextField, makeClient, normalizeProjectItem, readProject, reconcilePreparedOperations, selectCreationRoute } from '../scripts/lib/github-projects.mjs';
 
 const config = {
   owner: 'octocat',
@@ -106,6 +106,42 @@ test('approved no-op does not contact GitHub', async () => {
   const result = await applyUpdatePlan(config, async () => { called = true; }, { updates: [] });
   assert.equal(called, false);
   assert.deepEqual(result, { applied: 0, operations: [] });
+});
+
+test('prepared field updates are submitted in one GraphQL mutation', async () => {
+  let calls = 0;
+  const result = await applyPreparedOperations(async (query, variables) => {
+    calls++;
+    assert.match(query, /operation0:updateProjectV2ItemFieldValue/);
+    assert.match(query, /operation1:updateProjectV2ItemFieldValue/);
+    assert.equal(variables.projectId, 'PVT_1');
+    return {
+      operation0: { projectV2Item: { id: 'PVTI_1' } },
+      operation1: { projectV2Item: { id: 'PVTI_1' } }
+    };
+  }, 'PVT_1', [
+    { itemId: 'PVTI_1', fieldId: 'STATUS', value: { singleSelectOptionId: 'DONE' } },
+    { itemId: 'PVTI_1', fieldId: 'UPDATE', value: { text: 'Finished.' } }
+  ]);
+  assert.equal(calls, 1);
+  assert.deepEqual(result, { applied: 2 });
+});
+
+test('resume reconciliation distinguishes confirmed, retryable, and conflicting operations', () => {
+  const project = { normalizedItems: [
+    { itemId: 'confirmed', status: 'Done', summary: null },
+    { itemId: 'retry', status: 'Todo', summary: null },
+    { itemId: 'conflict', status: 'Blocked', summary: null }
+  ] };
+  const operation = (itemId, before, expected) => ({ key: itemId, kind: 'status', itemId, before, expected });
+  const report = reconcilePreparedOperations(project, [
+    operation('confirmed', 'Todo', 'Done'),
+    operation('retry', 'Todo', 'Done'),
+    operation('conflict', 'Todo', 'Done')
+  ]);
+  assert.deepEqual(report.confirmed.map(candidate => candidate.key), ['confirmed']);
+  assert.deepEqual(report.retryable.map(candidate => candidate.key), ['retry']);
+  assert.deepEqual(report.conflicts.map(({ operation: candidate }) => candidate.key), ['conflict']);
 });
 
 test('creation route follows all four visibility combinations', () => {

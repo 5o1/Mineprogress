@@ -35,7 +35,8 @@
         "hooks": [
           {
             "type": "command",
-            "command": "node \"${PLUGIN_ROOT}/scripts/hook.mjs\" session-end"
+            "command": "node \"${PLUGIN_ROOT}/scripts/hook.mjs\" session-end",
+            "timeout": 3
           }
         ]
       }

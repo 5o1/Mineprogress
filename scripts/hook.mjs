@@ -19,8 +19,10 @@ import {
   writeState
 } from './lib/state.mjs';
 import { logError } from './lib/errors.mjs';
+import { reconcilePendingUpdate, submitPendingUpdate } from './mineprogress.mjs';
 
 const ROOT = path.dirname(path.dirname(fileURLToPath(import.meta.url)));
+let hookInput = {};
 
 async function readInput() {
   let raw = '';
@@ -47,6 +49,7 @@ async function sessionStart(dataDir, input) {
   if (!await isInitialized(dataDir)) return;
   const state = await readState(dataDir, sessionId);
   if (!state?.boundItems.length) return;
+  if (state.pendingPlan) await reconcilePendingUpdate(dataDir, sessionId);
   const configuredRetention = Number(process.env.MINEPROGRESS_STATE_RETENTION_DAYS || 30);
   await pruneStaleStates(dataDir, {
     retentionDays: Number.isFinite(configuredRetention) && configuredRetention > 0 ? configuredRetention : 30,
@@ -101,6 +104,10 @@ async function stop(dataDir, input) {
     text: input.last_assistant_message || '',
     control: isControlTurn(state, input.turn_id)
   });
+  if (state.pendingPlan?.attempts?.length) {
+    await writeState(dataDir, state);
+    return;
+  }
   const run = beginUpdate(state);
   if (!run) {
     await writeState(dataDir, state);
@@ -113,7 +120,7 @@ async function stop(dataDir, input) {
   await writeState(dataDir, state);
   console.log(JSON.stringify({
     decision: 'block',
-    reason: `Mineprogress has an incremental update pending for ${state.boundItems.length} bound item(s). Run node \"${path.join(ROOT, 'scripts', 'mineprogress.mjs')}\" update prepare --session \"${sessionId}\" --data-dir \"${dataDir}\". Generate with the returned update model, run update stage, delegate approve/reject review to a separate reviewer subagent, then run update apply. Allow at most five content rounds. Do not create, bind, or unbind items. Keep a successful automatic update silent; surface only a failure.`
+    reason: `Mineprogress has an incremental plan revision pending for ${state.boundItems.length} bound item(s). Run node \"${path.join(ROOT, 'scripts', 'mineprogress.mjs')}\" update prepare --session \"${sessionId}\" --data-dir \"${dataDir}\". Consolidate existingPlan with only the returned incremental context, run update stage, delegate approve/reject review to a separate reviewer subagent, then run update apply to store the reviewed plan without writing GitHub. Allow at most five content rounds. Do not run update submit, create, bind, or unbind. Keep a successful automatic plan revision silent; surface only a failure.`
   }));
 }
 
@@ -121,14 +128,16 @@ async function sessionEnd(dataDir, input) {
   const sessionId = sessionIdOf(input);
   if (!await isInitialized(dataDir)) return;
   const state = await readState(dataDir, sessionId);
-  if (!state?.boundItems.length) return;
+  if (!state || (!state.boundItems.length && !state.pendingPlan)) return;
   state.lastEndedAt = new Date().toISOString();
   await writeState(dataDir, state);
+  if (state.pendingPlan) await submitPendingUpdate(dataDir, sessionId, { verify: false });
 }
 
 async function main() {
   const mode = process.argv[2];
   const input = await readInput();
+  hookInput = input;
   const dataDir = requireDataDir();
   if (mode === 'session-start') return sessionStart(dataDir, input);
   if (mode === 'user-prompt') return userPrompt(dataDir, input);
@@ -140,7 +149,7 @@ async function main() {
 main().catch(async error => {
   try {
     await logError(requireDataDir(), {
-      sessionId: process.env.MINEPROGRESS_SESSION_ID || null,
+      sessionId: sessionIdOf(hookInput) || process.env.MINEPROGRESS_SESSION_ID || null,
       stage: 'hook',
       errorCode: error.code,
       message: error.message

@@ -223,36 +223,100 @@ function operationKey(update, type, value) {
   return `${update.itemId}:${type}:${digest}`;
 }
 
-export async function applyUpdatePlan(config, client, plan, { alreadyApplied = [], onApplied = async () => {} } = {}) {
-  if (!plan.updates.length) return { applied: 0, operations: [...alreadyApplied] };
-  const project = await readProject(config, client);
+export function prepareUpdateOperations(config, project, plan) {
   const fields = projectFields(project);
-  const completed = new Set(alreadyApplied);
-  let applied = 0;
+  const items = new Map((project.normalizedItems || []).map(item => [item.itemId, item]));
+  const operations = [];
   for (const update of plan.updates) {
-    const operations = [];
+    const item = items.get(update.itemId);
     if (update.status) {
       const field = fields.get(config.statusFieldName);
       if (!field) throw infrastructureError(`Project field not found: ${config.statusFieldName}`, 'PROJECT_FIELD_MISSING');
       const option = field.options?.find(candidate => candidate.name === update.status);
       if (!option) throw infrastructureError(`Status option not found: ${update.status}`, 'PROJECT_STATUS_OPTION_MISSING');
-      operations.push({ key: operationKey(update, 'status', update.status), fieldId: field.id, value: { singleSelectOptionId: option.id } });
+      if (item?.status !== update.status) operations.push({
+        key: operationKey(update, 'status', update.status),
+        kind: 'status',
+        itemId: update.itemId,
+        fieldId: field.id,
+        before: item?.status || null,
+        expected: update.status,
+        value: { singleSelectOptionId: option.id }
+      });
     }
     if (update.summary) {
       const field = fields.get(config.updateFieldName);
       if (!field) throw infrastructureError(`Project field not found: ${config.updateFieldName}`, 'PROJECT_FIELD_MISSING');
-      operations.push({ key: operationKey(update, 'summary', update.summary), fieldId: field.id, value: { text: update.summary } });
+      if (item?.summary !== update.summary) operations.push({
+        key: operationKey(update, 'summary', update.summary),
+        kind: 'summary',
+        itemId: update.itemId,
+        fieldId: field.id,
+        before: item?.summary || null,
+        expected: update.summary,
+        value: { text: update.summary }
+      });
     }
-    for (const operation of operations) {
-      if (completed.has(operation.key)) continue;
-      const mutation = `mutation($projectId:ID!, $itemId:ID!, $fieldId:ID!, $value:ProjectV2FieldValue!) {
+  }
+  return { projectId: project.id, operations };
+}
+
+export function reconcilePreparedOperations(project, operations) {
+  const items = new Map((project.normalizedItems || []).map(item => [item.itemId, item]));
+  const confirmed = [];
+  const retryable = [];
+  const conflicts = [];
+  for (const operation of operations) {
+    const item = items.get(operation.itemId);
+    if (!item) {
+      conflicts.push({ operation, actual: null, reason: 'Project item is unavailable.' });
+      continue;
+    }
+    const actual = operation.kind === 'status' ? item.status : item.summary;
+    if (actual === operation.expected) confirmed.push(operation);
+    else if (actual === operation.before) retryable.push(operation);
+    else conflicts.push({ operation, actual, reason: 'Field changed after the plan was prepared.' });
+  }
+  return { confirmed, retryable, conflicts };
+}
+
+export async function applyPreparedOperations(client, projectId, operations) {
+  if (!operations.length) return { applied: 0 };
+  const definitions = ['$projectId:ID!'];
+  const selections = [];
+  const variables = { projectId };
+  operations.forEach((operation, index) => {
+    definitions.push(`$itemId${index}:ID!`, `$fieldId${index}:ID!`, `$value${index}:ProjectV2FieldValue!`);
+    variables[`itemId${index}`] = operation.itemId;
+    variables[`fieldId${index}`] = operation.fieldId;
+    variables[`value${index}`] = operation.value;
+    selections.push(`operation${index}:updateProjectV2ItemFieldValue(input:{projectId:$projectId,itemId:$itemId${index},fieldId:$fieldId${index},value:$value${index}}) { projectV2Item { id } }`);
+  });
+  const mutation = `mutation(${definitions.join(',')}) { ${selections.join('\n')} }`;
+  const data = await client(mutation, variables);
+  for (let index = 0; index < operations.length; index++) {
+    if (!data[`operation${index}`]?.projectV2Item?.id) {
+      throw infrastructureError('GitHub did not confirm every prepared Project field update.', 'GH_RESPONSE_INVALID');
+    }
+  }
+  return { applied: operations.length };
+}
+
+export async function applyUpdatePlan(config, client, plan, { alreadyApplied = [], onApplied = async () => {} } = {}) {
+  if (!plan.updates.length) return { applied: 0, operations: [...alreadyApplied] };
+  const project = await readProject(config, client);
+  const prepared = prepareUpdateOperations(config, project, plan);
+  const completed = new Set(alreadyApplied);
+  let applied = 0;
+  for (const operation of prepared.operations) {
+    if (completed.has(operation.key)) continue;
+    const mutation = `mutation($projectId:ID!, $itemId:ID!, $fieldId:ID!, $value:ProjectV2FieldValue!) {
         updateProjectV2ItemFieldValue(input:{projectId:$projectId,itemId:$itemId,fieldId:$fieldId,value:$value}) { projectV2Item { id } }
       }`;
-      await client(mutation, { projectId: project.id, itemId: update.itemId, fieldId: operation.fieldId, value: operation.value });
-      completed.add(operation.key);
-      applied++;
-      await onApplied(operation.key);
-    }
+    await client(mutation, { projectId: prepared.projectId, itemId: operation.itemId, fieldId: operation.fieldId, value: operation.value });
+    completed.add(operation.key);
+    applied++;
+    await onApplied(operation.key);
   }
   return { applied, operations: [...completed] };
 }
