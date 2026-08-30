@@ -12,6 +12,7 @@ const UPDATE_PHASES = new Set(['claimed', 'prepared', 'staged', 'reviewed']);
 const MAX_EVIDENCE_FACTS = 50;
 const MAX_EVIDENCE_TEXT_CHARACTERS = 2000;
 const MAX_PROCESSED_JOURNAL = 200;
+export const UPDATE_ENGINE_REVISION = 2;
 
 export function statePath(dataDir, sessionId) {
   if (!sessionId) throw Object.assign(new Error('sessionId is required'), { code: 'SESSION_ID_REQUIRED' });
@@ -268,6 +269,7 @@ export function beginUpdate(state, runId = crypto.randomUUID()) {
     journalSequences: events.map(event => event.sequence),
     useThreadHistory,
     fullContextRevision: useThreadHistory ? state.fullContextRequestedRevision : null,
+    engineRevision: UPDATE_ENGINE_REVISION,
     attempt: 0,
     stagedPlan: null,
     appliedOperations: [],
@@ -280,13 +282,15 @@ export function recoverExhaustedUpdate(state, runId = crypto.randomUUID()) {
   const exhausted = state.activeUpdate;
   if (!exhausted?.exhausted) return null;
   const laterEvidence = pendingJournal(state).some(event => event.sequence > exhausted.toSequence);
-  if (!laterEvidence) return null;
+  const engineUpgraded = (exhausted.engineRevision || 0) < UPDATE_ENGINE_REVISION;
+  if (!laterEvidence && !engineUpgraded) return null;
   state.activeUpdate = null;
   const recovered = beginUpdate(state, runId);
   recovered.recoveredExhaustion = {
     runId: exhausted.runId,
     errorId: exhausted.exhaustionErrorId || null,
     throughSequence: exhausted.toSequence,
+    reason: laterEvidence ? 'later-evidence' : 'engine-upgrade',
     resolvedAt: null
   };
   return recovered;

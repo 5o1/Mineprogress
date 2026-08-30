@@ -24,6 +24,8 @@ Notable user-visible changes are documented here. Entries follow
   retaining the five-attempt limit for unchanged evidence and marking the superseded error handled.
 - Constrain background JSON generation to the actual bound item IDs and discovered statuses, and
   feed static validation errors into the next bounded attempt instead of repeating a bad candidate.
+- Retry an exhausted transaction once after an internal update-engine revision, allowing an
+  installed engine fix to recover old state without requiring another user message.
 
 ## [0.6.0] - 2026-08-30
 

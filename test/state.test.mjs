@@ -371,7 +371,8 @@ test('exhausted updates recover automatically only after later journal evidence'
   assert.equal(recovered.runId, 'run-2');
   assert.deepEqual(recovered.journalSequences, [1, 2]);
   assert.deepEqual(recovered.recoveredExhaustion, {
-    runId: 'run-1', errorId: 'error-1', throughSequence: 1, resolvedAt: null
+    runId: 'run-1', errorId: 'error-1', throughSequence: 1,
+    reason: 'later-evidence', resolvedAt: null
   });
   assert.equal(recovered.attempt, 0);
 
@@ -379,6 +380,25 @@ test('exhausted updates recover automatically only after later journal evidence'
   const retried = retryExhaustedUpdate(state);
   assert.notEqual(retried.runId, 'run-2');
   assert.equal(retried.fromSequence, 0);
+});
+
+test('an update engine revision automatically retries an older exhausted run once', () => {
+  const state = newStateForTest();
+  appendJournal(state, { kind: 'user', turnId: 't1', text: 'Evidence' });
+  const exhausted = beginUpdate(state, 'run-old-engine');
+  exhausted.engineRevision = 1;
+  exhausted.exhausted = true;
+  exhausted.exhaustionErrorId = 'error-old-engine';
+
+  const recovered = recoverExhaustedUpdate(state, 'run-current-engine');
+  assert.equal(recovered.runId, 'run-current-engine');
+  assert.equal(recovered.engineRevision, 2);
+  assert.deepEqual(recovered.recoveredExhaustion, {
+    runId: 'run-old-engine', errorId: 'error-old-engine', throughSequence: 1,
+    reason: 'engine-upgrade', resolvedAt: null
+  });
+  recovered.exhausted = true;
+  assert.equal(recoverExhaustedUpdate(state), null);
 });
 
 test('verified evidence and status intent revisions survive transaction interruption boundaries', () => {

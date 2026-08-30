@@ -71,6 +71,8 @@ Five failed content rounds exhaust only that fixed batch. If later journal evide
 worker automatically opens a fresh bounded run over the exhausted events and the new evidence,
 then marks the superseded error handled. Without new evidence it remains dormant instead of looping;
 manual `update retry` is an optional override rather than a recovery requirement.
+An internal update-engine revision also grants one fresh bounded run after an installed engine fix,
+so an upgrade can recover its predecessor without requiring synthetic user input.
 
 UserPromptSubmit never classifies natural-language status intent. The background generator evaluates
 the journal semantically from the verified per-item evidence ledger, pending reviewed evidence,
