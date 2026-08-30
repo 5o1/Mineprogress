@@ -12,7 +12,7 @@ const UPDATE_PHASES = new Set(['claimed', 'prepared', 'staged', 'reviewed']);
 const MAX_EVIDENCE_FACTS = 50;
 const MAX_EVIDENCE_TEXT_CHARACTERS = 2000;
 const MAX_PROCESSED_JOURNAL = 200;
-export const UPDATE_ENGINE_REVISION = 2;
+export const UPDATE_ENGINE_REVISION = 3;
 
 export function statePath(dataDir, sessionId) {
   if (!sessionId) throw Object.assign(new Error('sessionId is required'), { code: 'SESSION_ID_REQUIRED' });

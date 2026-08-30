@@ -387,13 +387,13 @@ test('an update engine revision automatically retries an older exhausted run onc
   const state = newStateForTest();
   appendJournal(state, { kind: 'user', turnId: 't1', text: 'Evidence' });
   const exhausted = beginUpdate(state, 'run-old-engine');
-  exhausted.engineRevision = 1;
+  exhausted.engineRevision = 2;
   exhausted.exhausted = true;
   exhausted.exhaustionErrorId = 'error-old-engine';
 
   const recovered = recoverExhaustedUpdate(state, 'run-current-engine');
   assert.equal(recovered.runId, 'run-current-engine');
-  assert.equal(recovered.engineRevision, 2);
+  assert.equal(recovered.engineRevision, 3);
   assert.deepEqual(recovered.recoveredExhaustion, {
     runId: 'run-old-engine', errorId: 'error-old-engine', throughSequence: 1,
     reason: 'engine-upgrade', resolvedAt: null
