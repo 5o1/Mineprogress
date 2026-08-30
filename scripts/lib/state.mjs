@@ -42,6 +42,10 @@ export function newState(sessionId, now = new Date().toISOString()) {
 }
 
 function normalizeState(state) {
+  for (const item of state.boundItems || []) {
+    item.bindingSource ||= 'bind';
+    item.backfillRevision ??= 1;
+  }
   state.lastPlannedUpdate ??= state.lastSuccessfulUpdate || null;
   state.pendingPlan ??= null;
   state.backgroundRequestedThrough ??= null;
@@ -156,10 +160,17 @@ export function isControlTurn(state, turnId) {
   return Boolean(turnId && state.controlTurnIds?.includes(turnId));
 }
 
-export function bindItem(state, item) {
+export function bindItem(state, item, { source = 'bind' } = {}) {
   if (state.boundItems.some(bound => bound.itemId === item.itemId)) return false;
-  state.boundItems.push({ itemId: item.itemId, title: item.title || null, boundAt: new Date().toISOString() });
-  state.fullContextRequestedRevision = (state.fullContextRequestedRevision || 0) + 1;
+  const backfillRevision = (state.fullContextRequestedRevision || 0) + 1;
+  state.boundItems.push({
+    itemId: item.itemId,
+    title: item.title || null,
+    bindingSource: source,
+    backfillRevision,
+    boundAt: new Date().toISOString()
+  });
+  state.fullContextRequestedRevision = backfillRevision;
   state.fullContextPlannedRevision ??= 0;
   return true;
 }

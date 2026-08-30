@@ -17,8 +17,9 @@ source evidence, including messages from before installation. Give the reviewer 
    `prompt`; do not write to GitHub.
 2. Save the plan in a temporary file outside the repository and run `update stage --plan <file>`.
    Regenerate a statically rejected plan without sending it to review.
-3. Give a distinct reviewer subagent the returned review model, `prompts/review.md`, evidence, plan,
-   and static report. It returns only approve or reject and cannot edit the plan.
+3. Give a distinct reviewer subagent the returned review model, `prompts/review.md`, the separately
+   loaded `prompts/review-checklist.md`, evidence, plan, and static report. It returns only approve or
+   reject and cannot edit the plan.
 4. Save the response temporarily and run `update apply --review <file>`. Regenerate after rejection.
    For a manual invocation, finish with `update submit`.
 
@@ -28,4 +29,5 @@ elevation failures with `record-error` and stop.
 
 Automatic Stop revisions run in the plugin's asynchronous background worker, not in the foreground
 agent using this Skill. Do not duplicate that work when a manual command was not requested.
-`preferFastMode` is a session preference, not a per-subagent model option.
+Runtime prompt files are loaded only into those isolated generator/reviewer processes, not this
+thread's global instructions. `preferFastMode` is a session preference, not a per-subagent option.

@@ -1,6 +1,6 @@
 # Mineprogress
 
-Bind a Codex thread to GitHub Project items, prepare concise updates in the background, and silently submit them when the conversation ends.
+Bind a Codex thread to GitHub Project items, maintain structured progress history in the background, and silently submit it when the conversation ends.
 
 ## Usage
 
@@ -25,8 +25,8 @@ $mineprogress:check
 $mineprogress:status
 ```
 
-- `create` follows the visibility rules, creates and binds an item, then backfills the complete earlier thread in its first background update.
-- `bind` adds a Project item to the current thread's candidate list.
+- `create` creates and binds an item, then backfills its long-form Historical Progress from the complete earlier thread.
+- `bind` adds an existing Project item and preserves manual content while adding managed history.
 - `check` discovers actual Kanban statuses and suggests items to bind or unbind without changing them.
 - `status` works offline and shows the creation route, available statuses, and unresolved errors.
 

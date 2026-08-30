@@ -21,6 +21,14 @@ configuration. `config.example.json` documents the complete schema; users do not
 - `projectNumber`: the number shown in the Project URL.
 - `defaultRepository`: repository selected from the Project's linked repositories, in `owner/name` form.
 - `statusFieldName` / `updateFieldName`: single-select status and concise update text fields.
+- `update.maxBodyCharacters` / `maxCommentCharacters`: static limits for managed Markdown content.
+
+## Content contracts
+
+`prompts/create.md`, `prompts/bind.md`, and `prompts/update.md` control generation behavior.
+`prompts/review-checklist.md` independently controls semantic review. They are packaged plugin
+resources loaded only for an active background update, not global Codex instructions. The managed
+body format uses `Historical Progress` with chronological Requirements/Results segments.
 
 `check` reads the real options from the Status field and saves them in the global plugin cache.
 GitHub does not assign completion semantics to those options, so only names explicitly listed in

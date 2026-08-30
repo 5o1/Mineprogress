@@ -10,7 +10,8 @@ npm run ci
 
 Tests use Node's built-in `node:test` and cover thread isolation, incremental checkpoints, dynamic
 statuses, all four visibility routes, issue-to-Project insertion, full-thread binding backfill,
-background planning boundaries, static review checks, error redaction, and Stop loop prevention.
+managed Issue/Draft bodies, recoverable Issue comments, background planning boundaries, static
+review checks, error redaction, and Stop loop prevention.
 `validate` checks manifest/package versions, hook paths,
 command-Skill discovery size, explicit invocation policy, and required resources.
 

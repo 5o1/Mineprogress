@@ -30,10 +30,20 @@ incrementally maintains one reviewed but unsubmitted plan:
    installation or binding are available without parsing the unstable transcript file format.
    Later passes select only the journal after the last planning checkpoint and the approved plan.
 2. Generate one consolidated replacement plan, then locally check fields, bound IDs, actual
-   statuses, size, and obvious personal information.
+   statuses, size, managed-body structure, chronological history, preservation of manual body text,
+   and obvious personal information.
 3. Launch a separate ephemeral Codex reviewer process to detect context dumping, irrelevant
-   expansion, static failures, unsupported claims, and author-identifying data.
+   expansion, static failures, unsupported claims, and author-identifying data. Its checklist is a
+   separate runtime file rather than part of global Skill discovery.
 4. Store the approved plan without writing GitHub. A rejection regenerates it, up to five rounds.
+
+The first full-history pass loads `prompts/create.md` for newly created items or `prompts/bind.md`
+for existing items. Later passes load `prompts/update.md`. These files are passed only to ephemeral
+generator processes and do not enter the foreground thread's global prompt. An Issue or Draft body
+contains a managed `Historical Progress` section with chronological dated segments; every segment
+separates Requirements from Results. Text outside the managed markers is preserved exactly. The
+Project `Update` field remains concise. A repository Issue receives a comment only for a meaningful
+new result or status transition; initial backfills, ordinary Q&A, and Draft items do not.
 
 Both the generator and independent reviewer receive full history during backfill. A successful
 backfill records its own revision checkpoint; failure leaves the revision pending for another Stop.
@@ -45,10 +55,11 @@ durable; a later Stop resumes them rather than discarding context. The plugin tr
 
 `SessionEnd` performs no model work. It records an attempt and submits the latest reviewed plan as
 one batched GraphQL mutation, but treats the result as unverified and never removes the queue entry.
-On resume, Mineprogress reads the actual Project fields: target values confirm success, unchanged
-baseline values are safe to retry, and any third value is an external-edit conflict that is not
-overwritten. Only complete read-back confirmation removes the plan and advances the submission
-checkpoint. Manual `$mineprogress:update` submits and verifies immediately.
+On resume, Mineprogress reads Project fields and content bodies, and searches paginated Issue
+comments for a stable hidden operation marker. Target values confirm success, unchanged baseline
+values are safe to retry, and any third value is an external-edit conflict that is not overwritten.
+Only complete read-back confirmation removes the plan and advances the submission checkpoint.
+Manual `$mineprogress:update` submits and verifies immediately.
 
 An approved no-op advances only the planning checkpoint. Token, permission, network, configuration,
 model, or subagent failures stop immediately without consuming a content retry. An explicit sandbox

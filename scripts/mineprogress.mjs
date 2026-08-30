@@ -69,6 +69,10 @@ async function readJson(file) {
   return JSON.parse(await fs.readFile(file, 'utf8'));
 }
 
+async function readOptionalText(file) {
+  return file ? fs.readFile(file, 'utf8') : '';
+}
+
 async function githubClient() {
   const authentication = await resolveGithubToken();
   return makeClient(authentication.token);
@@ -212,11 +216,12 @@ async function createCommand(dataDir, flags, positional) {
   if (!initial) throw Object.assign(new Error('Thread cache does not exist.'), { code: 'STATE_NOT_FOUND' });
   requireCommandAuthorization(initial, 'create');
   const config = await pluginConfig(dataDir);
-  const item = await createKanbanItem(config, await githubClient(), title);
+  const body = await readOptionalText(flags['body-file']);
+  const item = await createKanbanItem(config, await githubClient(), title, body);
   await withSessionLock(dataDir, sessionId, async () => {
     const state = await readState(dataDir, sessionId);
     const consumeAuthorization = requireCommandAuthorization(state, 'create');
-    bindItem(state, item);
+    bindItem(state, item, { source: 'create' });
     consumeAuthorization();
     await writeState(dataDir, state);
   });
@@ -255,7 +260,7 @@ async function bindCommand(dataDir, flags, positional) {
   const changed = await withSessionLock(dataDir, sessionId, async () => {
     const state = await readState(dataDir, sessionId);
     const consumeAuthorization = requireCommandAuthorization(state, 'bind');
-    const bound = bindItem(state, item);
+    const bound = bindItem(state, item, { source: 'bind' });
     consumeAuthorization();
     await writeState(dataDir, state);
     return bound;
@@ -343,7 +348,6 @@ async function prepareUpdate(dataDir, sessionId) {
   const project = await readProject(config, await githubClient());
   const availableStatuses = projectStatusOptions(project, config).map(option => option.name);
   await updateProjectMetadata(dataDir, config, { availableStatuses });
-  const prompt = await fs.readFile(path.join(ROOT, 'prompts', 'update.md'), 'utf8');
   const state = await withSessionLock(dataDir, sessionId, async () => {
     const latest = await readState(dataDir, sessionId);
     if (!latest?.activeUpdate || latest.activeUpdate.runId !== setup.runId) {
@@ -365,21 +369,50 @@ async function prepareUpdate(dataDir, sessionId) {
   if (!state) return { outcome: 'noop', reason: 'No items remain bound; checkpoint advanced.' };
   const run = state.activeUpdate;
   const boundIds = new Set(state.boundItems.map(item => item.itemId));
+  const bindings = new Map(state.boundItems.map(item => [item.itemId, item]));
+  const boundItems = project.normalizedItems
+    .filter(item => boundIds.has(item.itemId))
+    .map(item => {
+      const binding = bindings.get(item.itemId);
+      return {
+        ...item,
+        bindingSource: binding?.bindingSource || 'bind',
+        backfillRequested: Boolean(run.useThreadHistory &&
+          (binding?.backfillRevision || 1) > (state.fullContextPlannedRevision || 0) &&
+          (binding?.backfillRevision || 1) <= run.fullContextRevision)
+      };
+    });
+  const promptNames = run.useThreadHistory
+    ? [...new Set(boundItems.filter(item => item.backfillRequested)
+      .map(item => item.bindingSource === 'create' ? 'create' : 'bind'))]
+    : ['update'];
+  const prompt = (await Promise.all(promptNames.map(async name =>
+    fs.readFile(path.join(ROOT, 'prompts', `${name}.md`), 'utf8')))).join('\n\n');
+  const model = run.useThreadHistory && boundItems.some(item => item.backfillRequested && item.bindingSource === 'create')
+    ? config.models.create : config.models.update;
   return {
     outcome: 'generate_and_review',
     sessionId,
     runId: run.runId,
     attempt: run.attempt + 1,
     maxAttempts: config.update.maxReviewAttempts,
-    model: config.models.update,
+    model,
     reviewModel: config.models.review,
     preferFastMode: config.models.preferFastMode,
     useThreadHistory: Boolean(run.useThreadHistory),
     prompt,
     existingPlan: state.pendingPlan?.plan || { updates: [] },
     availableStatuses,
-    allowedOutput: { updates: [{ itemId: 'bound-id', status: 'exact available status name', summary: 'consolidated concise redacted update' }] },
-    boundItems: project.normalizedItems.filter(item => boundIds.has(item.itemId)),
+    promptNames,
+    planningDate: new Date().toISOString().slice(0, 10),
+    allowedOutput: { updates: [{
+      itemId: 'bound-id',
+      status: 'exact available status name or null',
+      summary: 'concise Project field text or null',
+      body: 'complete managed long-form body or null',
+      comment: 'meaningful Issue progress comment or null'
+    }] },
+    boundItems,
     context: pendingJournal(state).filter(event => event.sequence <= run.toSequence)
   };
 }
@@ -420,10 +453,12 @@ async function stageUpdate(dataDir, sessionId, flags) {
     }
     state.activeUpdate.attempt++;
     const report = validatePlan(plan, {
-      boundItemIds: state.boundItems.map(item => item.itemId),
+      boundItems: state.activeUpdate.projectSnapshot.normalizedItems,
       allowedStatuses: metadata.availableStatuses,
       maxCharacters: config.update.maxSummaryCharacters,
-      maxWords: config.update.maxSummaryWords
+      maxWords: config.update.maxSummaryWords,
+      maxBodyCharacters: config.update.maxBodyCharacters,
+      maxCommentCharacters: config.update.maxCommentCharacters
     });
     if (!report.valid) {
       state.activeUpdate.stagedPlan = null;
@@ -499,18 +534,19 @@ export async function reconcilePendingUpdate(dataDir, sessionId, { retry = true 
   if (!state) return { submitted: false, reason: 'Thread cache does not exist.' };
   if (!state.pendingPlan) return { submitted: false, reason: 'No reviewed plan is pending.' };
   const config = await pluginConfig(dataDir);
-  let project = await readProject(config, await githubClient());
-  let report = reconcilePreparedOperations(project, state.pendingPlan.operations);
+  const client = await githubClient();
+  let project = await readProject(config, client);
+  let report = await reconcilePreparedOperations(project, state.pendingPlan.operations, { client });
   if (retry && report.retryable.length) {
     await sendPendingOperations(dataDir, state, report.retryable);
-    project = await readProject(config, await githubClient());
-    report = reconcilePreparedOperations(project, state.pendingPlan.operations);
+    project = await readProject(config, client);
+    report = await reconcilePreparedOperations(project, state.pendingPlan.operations, { client });
   }
   if (!report.retryable.length && !report.conflicts.length) {
-    const fieldUpdates = report.confirmed.length;
+    const writeOperations = report.confirmed.length;
     completeSubmission(state);
     await writeState(dataDir, state);
-    return { submitted: true, verified: true, fieldUpdates, checkpointAdvanced: true };
+    return { submitted: true, verified: true, writeOperations, checkpointAdvanced: true };
   }
   state.pendingPlan.lastReconciliation = {
     checkedAt: new Date().toISOString(),
@@ -598,7 +634,7 @@ async function statusCommand(dataDir, flags, positional) {
     ? `Kanban statuses: ${metadata.availableStatuses.join(', ')}.`
     : 'Kanban statuses: unknown; run check to refresh them.';
   const pendingPlanLine = state?.pendingPlan
-    ? `Pending submission: ${state.pendingPlan.plan.updates.length} item update(s), ${state.pendingPlan.operations.length} field operation(s), ${state.pendingPlan.submissionStatus}.`
+    ? `Pending submission: ${state.pendingPlan.plan.updates.length} item update(s), ${state.pendingPlan.operations.length} write operation(s), ${state.pendingPlan.submissionStatus}.`
     : 'Pending submission: none.';
   return { scope: all ? 'all sessions' : sessionId, creationPolicyLine, kanbanStatusLine, pendingPlanLine, unresolvedCount: errors.length, errors };
 }

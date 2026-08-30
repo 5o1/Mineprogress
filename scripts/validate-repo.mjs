@@ -81,8 +81,11 @@ if (!releaseWorkflow.includes('workflow_run:') ||
 }
 
 const requiredFiles = [
+  'prompts/create.md',
+  'prompts/bind.md',
   'prompts/update.md',
   'prompts/review.md',
+  'prompts/review-checklist.md',
   'docs/configuration.md',
   'docs/workflow.md',
   'docs/development.md',

@@ -8,7 +8,7 @@ Mineprogress is a dependency-free Node.js Codex plugin for thread-bound GitHub P
 - `scripts/hook.mjs`: SessionStart, UserPromptSubmit, Stop, and SessionEnd adapter.
 - `scripts/lib/`: configuration, GitHub GraphQL, state, validation, metadata, and error modules.
 - `hooks/hooks.json` and `skills/<command>/SKILL.md`: lifecycle hooks and command-specific Skills.
-- `prompts/`: update and reviewer output contracts.
+- `prompts/`: runtime create, bind, update, and reviewer contracts.
 - `test/*.test.mjs`: Node test suites; `docs/` contains detailed user and maintainer guidance.
 - `.github/workflows/`: focused CI and tag-based GitHub Release automation.
 

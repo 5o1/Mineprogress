@@ -52,9 +52,10 @@ const PROJECT_FRAGMENT = `fragment ProjectData on ProjectV2 {
     nodes {
       id isArchived
       content {
-        ... on DraftIssue { title body }
-        ... on Issue { title number repository { nameWithOwner } }
-        ... on PullRequest { title number repository { nameWithOwner } }
+        __typename
+        ... on DraftIssue { id title body }
+        ... on Issue { id title number url body repository { nameWithOwner } }
+        ... on PullRequest { id title number url body repository { nameWithOwner } }
       }
       fieldValues(first:20) { nodes {
         ... on ProjectV2ItemFieldTextValue { text field { ... on ProjectV2FieldCommon { id name } } }
@@ -80,9 +81,16 @@ export function normalizeProjectItem(item, config) {
   const fields = new Map((item.fieldValues?.nodes || [])
     .filter(value => value.field?.name)
     .map(value => [value.field.name, value]));
+  const contentType = item.content?.__typename === 'Issue' ? 'issue'
+    : item.content?.__typename === 'DraftIssue' ? 'draft'
+      : item.content?.__typename === 'PullRequest' ? 'pullRequest' : null;
   return {
     itemId: item.id,
     title: item.content?.title || '(untitled draft)',
+    contentId: item.content?.id || null,
+    contentType,
+    body: item.content?.body || '',
+    url: item.content?.url || null,
     repository: item.content?.repository?.nameWithOwner || null,
     archived: Boolean(item.isArchived),
     status: fields.get(config.statusFieldName)?.name || null,
@@ -124,15 +132,15 @@ export async function readProject(config, client) {
   return combined;
 }
 
-export async function createDraftItem(config, client, title) {
+export async function createDraftItem(config, client, title, body = '') {
   const normalizedTitle = String(title || '').trim();
   if (!normalizedTitle) throw Object.assign(new Error('A non-empty title is required.'), { code: 'CREATE_TITLE_REQUIRED' });
   if ([...normalizedTitle].length > 256) throw Object.assign(new Error('Title must not exceed 256 characters.'), { code: 'CREATE_TITLE_INVALID' });
   const project = await readProject(config, client);
-  const mutation = `mutation($projectId:ID!, $title:String!) {
-    addProjectV2DraftIssue(input:{projectId:$projectId,title:$title}) { projectItem { id } }
+  const mutation = `mutation($projectId:ID!, $title:String!, $body:String!) {
+    addProjectV2DraftIssue(input:{projectId:$projectId,title:$title,body:$body}) { projectItem { id } }
   }`;
-  const data = await client(mutation, { projectId: project.id, title: normalizedTitle });
+  const data = await client(mutation, { projectId: project.id, title: normalizedTitle, body: String(body || '') });
   return { itemId: data.addProjectV2DraftIssue?.projectItem?.id, title: normalizedTitle };
 }
 
@@ -177,25 +185,25 @@ export async function inspectCreationPolicy(config, client, existingProject) {
   };
 }
 
-export async function createKanbanItem(config, client, title) {
+export async function createKanbanItem(config, client, title, body = '') {
   const normalizedTitle = String(title || '').trim();
   if (!normalizedTitle) throw Object.assign(new Error('A non-empty title is required.'), { code: 'CREATE_TITLE_REQUIRED' });
   if ([...normalizedTitle].length > 256) throw Object.assign(new Error('Title must not exceed 256 characters.'), { code: 'CREATE_TITLE_INVALID' });
   const project = await readProject(config, client);
   const policy = await inspectCreationPolicy(config, client, project);
   if (policy.route === 'draft') {
-    const mutation = `mutation($projectId:ID!, $title:String!) {
-      addProjectV2DraftIssue(input:{projectId:$projectId,title:$title}) { projectItem { id } }
+    const mutation = `mutation($projectId:ID!, $title:String!, $body:String!) {
+      addProjectV2DraftIssue(input:{projectId:$projectId,title:$title,body:$body}) { projectItem { id } }
     }`;
-    const data = await client(mutation, { projectId: project.id, title: normalizedTitle });
+    const data = await client(mutation, { projectId: project.id, title: normalizedTitle, body: String(body || '') });
     const itemId = data.addProjectV2DraftIssue?.projectItem?.id;
     if (!itemId) throw infrastructureError('GitHub did not return the created draft item id.', 'GH_RESPONSE_INVALID');
     return { itemId, title: normalizedTitle, kind: 'draft', policy };
   }
-  const createMutation = `mutation($repositoryId:ID!, $title:String!) {
-    createIssue(input:{repositoryId:$repositoryId,title:$title}) { issue { id number url } }
+  const createMutation = `mutation($repositoryId:ID!, $title:String!, $body:String!) {
+    createIssue(input:{repositoryId:$repositoryId,title:$title,body:$body}) { issue { id number url } }
   }`;
-  const created = await client(createMutation, { repositoryId: policy.repositoryId, title: normalizedTitle });
+  const created = await client(createMutation, { repositoryId: policy.repositoryId, title: normalizedTitle, body: String(body || '') });
   const issue = created.createIssue?.issue;
   if (!issue?.id) throw infrastructureError('GitHub did not return the created issue id.', 'GH_RESPONSE_INVALID');
   const addMutation = `mutation($projectId:ID!, $contentId:ID!) {
@@ -221,6 +229,10 @@ function projectFields(project) {
 function operationKey(update, type, value) {
   const digest = crypto.createHash('sha256').update(String(value)).digest('hex').slice(0, 16);
   return `${update.itemId}:${type}:${digest}`;
+}
+
+function commentMarker(key) {
+  return `<!-- mineprogress:comment:${key.split(':').at(-1)} -->`;
 }
 
 export function prepareUpdateOperations(config, project, plan) {
@@ -257,11 +269,61 @@ export function prepareUpdateOperations(config, project, plan) {
         value: { text: update.summary }
       });
     }
+    if (update.body) {
+      if (!item?.contentId || !['issue', 'draft'].includes(item.contentType)) {
+        throw infrastructureError('Project item does not support a managed body.', 'PROJECT_ITEM_BODY_UNSUPPORTED');
+      }
+      if (item.body !== update.body) operations.push({
+        key: operationKey(update, 'body', update.body),
+        kind: 'body',
+        itemId: update.itemId,
+        contentId: item.contentId,
+        contentType: item.contentType,
+        before: item.body || '',
+        expected: update.body,
+        value: { body: update.body }
+      });
+    }
+    if (update.comment) {
+      if (!item?.contentId || !['issue', 'pullRequest'].includes(item.contentType)) {
+        throw infrastructureError('Project item does not support comments.', 'PROJECT_ITEM_COMMENT_UNSUPPORTED');
+      }
+      const key = operationKey(update, 'comment', update.comment);
+      const marker = commentMarker(key);
+      operations.push({
+        key,
+        kind: 'comment',
+        itemId: update.itemId,
+        contentId: item.contentId,
+        contentType: item.contentType,
+        before: null,
+        expected: marker,
+        value: { body: `${update.comment.trim()}\n\n${marker}` }
+      });
+    }
   }
   return { projectId: project.id, operations };
 }
 
-export function reconcilePreparedOperations(project, operations) {
+async function hasCommentMarker(client, contentId, marker) {
+  let after = null;
+  do {
+    const query = `query($id:ID!, $after:String) {
+      node(id:$id) {
+        ... on Issue { comments(first:100,after:$after) { pageInfo { hasNextPage endCursor } nodes { body } } }
+        ... on PullRequest { comments(first:100,after:$after) { pageInfo { hasNextPage endCursor } nodes { body } } }
+      }
+    }`;
+    const data = await client(query, { id: contentId, after });
+    const comments = data.node?.comments;
+    if (!comments) throw infrastructureError('Comment subject is unavailable.', 'PROJECT_ITEM_COMMENT_UNSUPPORTED');
+    if ((comments.nodes || []).some(comment => comment.body?.includes(marker))) return true;
+    after = comments.pageInfo?.hasNextPage ? comments.pageInfo.endCursor : null;
+  } while (after);
+  return false;
+}
+
+export async function reconcilePreparedOperations(project, operations, { client } = {}) {
   const items = new Map((project.normalizedItems || []).map(item => [item.itemId, item]));
   const confirmed = [];
   const retryable = [];
@@ -272,7 +334,18 @@ export function reconcilePreparedOperations(project, operations) {
       conflicts.push({ operation, actual: null, reason: 'Project item is unavailable.' });
       continue;
     }
-    const actual = operation.kind === 'status' ? item.status : item.summary;
+    if (operation.kind === 'comment') {
+      if (!client) {
+        retryable.push(operation);
+        continue;
+      }
+      if (await hasCommentMarker(client, operation.contentId, operation.expected)) confirmed.push(operation);
+      else retryable.push(operation);
+      continue;
+    }
+    const actual = operation.kind === 'status' ? item.status
+      : operation.kind === 'summary' ? item.summary
+        : operation.kind === 'body' ? item.body : undefined;
     if (actual === operation.expected) confirmed.push(operation);
     else if (actual === operation.before) retryable.push(operation);
     else conflicts.push({ operation, actual, reason: 'Field changed after the plan was prepared.' });
@@ -282,20 +355,39 @@ export function reconcilePreparedOperations(project, operations) {
 
 export async function applyPreparedOperations(client, projectId, operations) {
   if (!operations.length) return { applied: 0 };
-  const definitions = ['$projectId:ID!'];
+  const hasProjectFields = operations.some(operation => ['status', 'summary'].includes(operation.kind));
+  const definitions = hasProjectFields ? ['$projectId:ID!'] : [];
   const selections = [];
-  const variables = { projectId };
+  const variables = hasProjectFields ? { projectId } : {};
   operations.forEach((operation, index) => {
-    definitions.push(`$itemId${index}:ID!`, `$fieldId${index}:ID!`, `$value${index}:ProjectV2FieldValue!`);
-    variables[`itemId${index}`] = operation.itemId;
-    variables[`fieldId${index}`] = operation.fieldId;
-    variables[`value${index}`] = operation.value;
-    selections.push(`operation${index}:updateProjectV2ItemFieldValue(input:{projectId:$projectId,itemId:$itemId${index},fieldId:$fieldId${index},value:$value${index}}) { projectV2Item { id } }`);
+    if (['status', 'summary'].includes(operation.kind)) {
+      definitions.push(`$itemId${index}:ID!`, `$fieldId${index}:ID!`, `$value${index}:ProjectV2FieldValue!`);
+      variables[`itemId${index}`] = operation.itemId;
+      variables[`fieldId${index}`] = operation.fieldId;
+      variables[`value${index}`] = operation.value;
+      selections.push(`operation${index}:updateProjectV2ItemFieldValue(input:{projectId:$projectId,itemId:$itemId${index},fieldId:$fieldId${index},value:$value${index}}) { projectV2Item { id } }`);
+    } else {
+      definitions.push(`$contentId${index}:ID!`, `$body${index}:String!`);
+      variables[`contentId${index}`] = operation.contentId;
+      variables[`body${index}`] = operation.value.body;
+      if (operation.kind === 'body' && operation.contentType === 'issue') {
+        selections.push(`operation${index}:updateIssue(input:{id:$contentId${index},body:$body${index}}) { issue { id } }`);
+      } else if (operation.kind === 'body' && operation.contentType === 'draft') {
+        selections.push(`operation${index}:updateProjectV2DraftIssue(input:{draftIssueId:$contentId${index},body:$body${index}}) { draftIssue { id } }`);
+      } else if (operation.kind === 'comment') {
+        selections.push(`operation${index}:addComment(input:{subjectId:$contentId${index},body:$body${index}}) { commentEdge { node { id } } }`);
+      } else {
+        throw infrastructureError(`Unsupported prepared operation: ${operation.kind}.`, 'UPDATE_OPERATION_INVALID');
+      }
+    }
   });
-  const mutation = `mutation(${definitions.join(',')}) { ${selections.join('\n')} }`;
+  const signature = definitions.length ? `(${definitions.join(',')})` : '';
+  const mutation = `mutation${signature} { ${selections.join('\n')} }`;
   const data = await client(mutation, variables);
   for (let index = 0; index < operations.length; index++) {
-    if (!data[`operation${index}`]?.projectV2Item?.id) {
+    const payload = data[`operation${index}`];
+    const confirmed = payload?.projectV2Item?.id || payload?.issue?.id || payload?.draftIssue?.id || payload?.commentEdge?.node?.id;
+    if (!confirmed) {
       throw infrastructureError('GitHub did not confirm every prepared Project field update.', 'GH_RESPONSE_INVALID');
     }
   }
@@ -310,10 +402,7 @@ export async function applyUpdatePlan(config, client, plan, { alreadyApplied = [
   let applied = 0;
   for (const operation of prepared.operations) {
     if (completed.has(operation.key)) continue;
-    const mutation = `mutation($projectId:ID!, $itemId:ID!, $fieldId:ID!, $value:ProjectV2FieldValue!) {
-        updateProjectV2ItemFieldValue(input:{projectId:$projectId,itemId:$itemId,fieldId:$fieldId,value:$value}) { projectV2Item { id } }
-      }`;
-    await client(mutation, { projectId: prepared.projectId, itemId: operation.itemId, fieldId: operation.fieldId, value: operation.value });
+    await applyPreparedOperations(client, prepared.projectId, [operation]);
     completed.add(operation.key);
     applied++;
     await onApplied(operation.key);

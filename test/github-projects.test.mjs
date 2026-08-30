@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { applyPreparedOperations, applyUpdatePlan, createDraftItem, createKanbanItem, createTextField, makeClient, normalizeProjectItem, readProject, reconcilePreparedOperations, selectCreationRoute } from '../scripts/lib/github-projects.mjs';
+import { applyPreparedOperations, applyUpdatePlan, createDraftItem, createKanbanItem, createTextField, makeClient, normalizeProjectItem, prepareUpdateOperations, readProject, reconcilePreparedOperations, selectCreationRoute } from '../scripts/lib/github-projects.mjs';
 
 const config = {
   owner: 'octocat',
@@ -48,13 +48,16 @@ test('project items normalize configured fields', () => {
   const item = normalizeProjectItem({
     id: 'PVTI_1',
     isArchived: false,
-    content: { title: 'Ship' },
+    content: { __typename: 'Issue', id: 'I_1', title: 'Ship', body: 'Existing body', url: 'https://example.test/1' },
     fieldValues: { nodes: [
       { name: 'In progress', field: { name: 'Status' } },
       { text: 'Tests added', field: { name: 'Update' } }
     ] }
   }, config);
-  assert.deepEqual(item, { itemId: 'PVTI_1', title: 'Ship', repository: null, archived: false, status: 'In progress', summary: 'Tests added' });
+  assert.deepEqual(item, {
+    itemId: 'PVTI_1', title: 'Ship', contentId: 'I_1', contentType: 'issue', body: 'Existing body',
+    url: 'https://example.test/1', repository: null, archived: false, status: 'In progress', summary: 'Tests added'
+  });
 });
 
 test('readProject follows item pagination', async () => {
@@ -95,7 +98,9 @@ test('create returns the new draft item id', async () => {
 
 test('approved plan applies status and summary with recoverable operation keys', async () => {
   const applied = [];
-  const client = async query => query.includes('updateProjectV2ItemFieldValue') ? { updateProjectV2ItemFieldValue: { projectV2Item: { id: 'PVTI_1' } } } : projectPage();
+  const client = async query => query.includes('operation0:updateProjectV2ItemFieldValue')
+    ? { operation0: { projectV2Item: { id: 'PVTI_1' } } }
+    : projectPage();
   const result = await applyUpdatePlan(config, client, { updates: [{ itemId: 'PVTI_1', status: 'Done', summary: 'Finished.' }] }, { onApplied: async key => applied.push(key) });
   assert.equal(result.applied, 2);
   assert.equal(applied.length, 2);
@@ -120,21 +125,64 @@ test('prepared field updates are submitted in one GraphQL mutation', async () =>
       operation1: { projectV2Item: { id: 'PVTI_1' } }
     };
   }, 'PVT_1', [
-    { itemId: 'PVTI_1', fieldId: 'STATUS', value: { singleSelectOptionId: 'DONE' } },
-    { itemId: 'PVTI_1', fieldId: 'UPDATE', value: { text: 'Finished.' } }
+    { kind: 'status', itemId: 'PVTI_1', fieldId: 'STATUS', value: { singleSelectOptionId: 'DONE' } },
+    { kind: 'summary', itemId: 'PVTI_1', fieldId: 'UPDATE', value: { text: 'Finished.' } }
   ]);
   assert.equal(calls, 1);
   assert.deepEqual(result, { applied: 2 });
 });
 
-test('resume reconciliation distinguishes confirmed, retryable, and conflicting operations', () => {
+test('managed Issue body and progress comment are prepared, batched, and externally reconcilable', async () => {
+  const body = '<!-- mineprogress:managed:start -->\n## Context\nParser work.\n\n## Historical Progress\n### 2026-08-30 — Parser\n#### Requirements\n- Parse input.\n#### Results\n- Parser passes.\n<!-- mineprogress:managed:end -->';
+  const project = {
+    id: 'PVT_1',
+    fields: { nodes: [] },
+    normalizedItems: [{
+      itemId: 'PVTI_1', contentId: 'I_1', contentType: 'issue', body: '', status: null, summary: null
+    }]
+  };
+  const prepared = prepareUpdateOperations(config, project, {
+    updates: [{ itemId: 'PVTI_1', body, comment: 'Parser phase completed.' }]
+  });
+  assert.deepEqual(prepared.operations.map(operation => operation.kind), ['body', 'comment']);
+  assert.match(prepared.operations[1].value.body, /mineprogress:comment:/);
+
+  let submittedVariables;
+  await applyPreparedOperations(async (query, variables) => {
+    submittedVariables = variables;
+    assert.match(query, /operation0:updateIssue/);
+    assert.match(query, /operation1:addComment/);
+    assert.doesNotMatch(query, /\$projectId/);
+    return {
+      operation0: { issue: { id: 'I_1' } },
+      operation1: { commentEdge: { node: { id: 'IC_1' } } }
+    };
+  }, project.id, prepared.operations);
+  assert.equal(submittedVariables.contentId0, 'I_1');
+
+  project.normalizedItems[0].body = body;
+  const report = await reconcilePreparedOperations(project, prepared.operations, {
+    client: async (_query, variables) => ({
+      node: {
+        comments: {
+          pageInfo: { hasNextPage: false, endCursor: null },
+          nodes: [{ body: `Recorded.\n${prepared.operations[1].expected}` }]
+        }
+      }
+    })
+  });
+  assert.deepEqual(report.confirmed.map(operation => operation.kind), ['body', 'comment']);
+  assert.equal(report.retryable.length, 0);
+});
+
+test('resume reconciliation distinguishes confirmed, retryable, and conflicting operations', async () => {
   const project = { normalizedItems: [
     { itemId: 'confirmed', status: 'Done', summary: null },
     { itemId: 'retry', status: 'Todo', summary: null },
     { itemId: 'conflict', status: 'Blocked', summary: null }
   ] };
   const operation = (itemId, before, expected) => ({ key: itemId, kind: 'status', itemId, before, expected });
-  const report = reconcilePreparedOperations(project, [
+  const report = await reconcilePreparedOperations(project, [
     operation('confirmed', 'Todo', 'Done'),
     operation('retry', 'Todo', 'Done'),
     operation('conflict', 'Todo', 'Done')
@@ -153,19 +201,22 @@ test('creation route follows all four visibility combinations', () => {
 
 test('public repository issue creation adds the issue to the Project', async () => {
   const calls = [];
+  const inputs = [];
   const publicConfig = { ...config, creation: { ...config.creation, projectVisibility: 'public', repositoryVisibility: 'public' } };
   const client = async (query, variables) => {
     calls.push(query);
+    inputs.push(variables);
     if (query.includes('query($login')) return projectPage();
     if (query.includes('repository(owner')) return { repository: { id: 'R_1', nameWithOwner: 'octocat/todos', visibility: 'PUBLIC' } };
     if (query.includes('createIssue')) return { createIssue: { issue: { id: 'I_1', number: 7, url: 'https://example.test/7' } } };
     if (query.includes('addProjectV2ItemById')) return { addProjectV2ItemById: { item: { id: 'PVTI_7' } } };
     throw new Error(`Unexpected query with ${JSON.stringify(variables)}`);
   };
-  const item = await createKanbanItem(publicConfig, client, 'Public task');
+  const item = await createKanbanItem(publicConfig, client, 'Public task', 'Initial body');
   assert.equal(item.kind, 'issue');
   assert.equal(item.itemId, 'PVTI_7');
   assert.equal(calls.some(query => query.includes('addProjectV2ItemById')), true);
+  assert.equal(inputs.find(input => input?.repositoryId)?.body, 'Initial body');
 });
 
 test('private Project with public repository creates a draft through projectItem payload', async () => {

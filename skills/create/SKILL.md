@@ -16,6 +16,6 @@ node <plugin-root>/scripts/mineprogress.mjs create --title <title> --session <se
 
 The CLI selects a repository issue or Project draft from the configured visibility route and binds
 the resulting Project item immediately. Do not create additional items or infer a title from earlier
-conversation. The next asynchronous Stop pass uses an ephemeral fork of the current Codex session
-to consolidate its complete history, including context from before plugin installation or creation;
-do not run update manually just to capture that earlier context.
+conversation. The next asynchronous Stop pass loads `prompts/create.md` only into its isolated
+generator and uses the configured create model to backfill a structured long-form body from the full
+thread, including context from before installation. Do not run update manually for that backfill.

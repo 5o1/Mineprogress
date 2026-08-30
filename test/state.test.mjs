@@ -111,12 +111,19 @@ test('new journal events do not replace an active recoverable transaction', () =
 
 test('a binding can start a full-history update without locally journaled context', () => {
   const state = newStateForTest();
-  bindItem(state, { itemId: 'PVTI_1', title: 'Imported thread task' });
+  bindItem(state, { itemId: 'PVTI_1', title: 'Imported thread task' }, { source: 'create' });
+  assert.equal(state.boundItems[0].bindingSource, 'create');
+  assert.equal(state.boundItems[0].backfillRevision, 1);
   const run = beginUpdate(state, 'full-run');
   assert.equal(run.toSequence, 0);
   assert.equal(run.useThreadHistory, true);
   completeUpdate(state, 'full-run');
   assert.equal(state.fullContextPlannedRevision, 1);
+  bindItem(state, { itemId: 'PVTI_2', title: 'Existing item' }, { source: 'bind' });
+  assert.equal(state.boundItems[1].bindingSource, 'bind');
+  assert.equal(state.boundItems[1].backfillRevision, 2);
+  completeUpdate(state, beginUpdate(state, 'second-full-run').runId);
+  assert.equal(state.fullContextPlannedRevision, 2);
   assert.equal(beginUpdate(state), null);
 });
 

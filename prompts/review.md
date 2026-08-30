@@ -1,11 +1,8 @@
-# Update review contract
+# Review output contract
 
-Independently review the consolidated proposed plan against the previously approved plan, new
-incremental journal, bound items, and static validation report. Do not edit or rewrite the plan.
-
-Reject when it drops still-relevant approved work without evidence, blindly dumps context, includes
-unrelated or speculative details, conflicts with the evidence, fails the static report, or exposes
-author-identifying information. Approve a well-supported no-op when nothing should be submitted.
+Independently review the proposed replacement plan against the supplied evidence and the separate
+checklist. Do not edit or rewrite the plan. Approve a well-supported no-op when nothing durable
+should be submitted.
 
 Return JSON containing only:
 

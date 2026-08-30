@@ -19,6 +19,8 @@ test('background worker generates and reviews a plan without submitting it', asy
     boundItems: [{ itemId: 'PVTI_1', title: 'Parser' }],
     context: [{ sequence: 1, kind: 'user', text: 'Parser is complete.' }],
     useThreadHistory: true,
+    promptNames: ['create'],
+    planningDate: '2026-08-30',
     model: { model: 'gpt-5.6-luna', reasoningEffort: 'medium' },
     reviewModel: { model: 'gpt-5.6-luna', reasoningEffort: 'medium' }
   };
@@ -41,7 +43,8 @@ test('background worker generates and reviews a plan without submitting it', asy
     prompts.push(input.prompt);
     forks.push(input.forkSessionId);
     if ('updates' in input.schema.properties) {
-      return { updates: [{ itemId: 'PVTI_1', status: 'Done', summary: 'Parser completed.' }] };
+      assert.deepEqual(input.schema.properties.updates.items.required, ['itemId', 'status', 'summary', 'body', 'comment']);
+      return { updates: [{ itemId: 'PVTI_1', status: 'Done', summary: 'Parser completed.', body: null, comment: null }] };
     }
     return { decision: 'approve', reason: 'Relevant and redacted.' };
   };
@@ -55,4 +58,5 @@ test('background worker generates and reviews a plan without submitting it', asy
   assert.match(prompts[0], /Parser is complete/);
   assert.match(prompts[0], /messages from before Mineprogress was installed/);
   assert.match(prompts[1], /proposedPlan/);
+  assert.match(prompts[1], /Reviewer checklist/);
 });

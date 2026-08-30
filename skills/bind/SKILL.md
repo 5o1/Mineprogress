@@ -13,4 +13,5 @@ node <plugin-root>/scripts/mineprogress.mjs bind <itemId> --session <session_id>
 ```
 
 Report whether the item was newly bound or already present. Never bind suggestions from `check`
-without a separate explicit user invocation.
+without a separate explicit user invocation. The asynchronous backfill loads `prompts/bind.md` only
+inside its isolated generator; it must preserve author-written body content outside managed markers.

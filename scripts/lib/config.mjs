@@ -23,7 +23,9 @@ export const DEFAULT_CONFIG = {
   update: {
     maxReviewAttempts: 5,
     maxSummaryCharacters: 500,
-    maxSummaryWords: 80
+    maxSummaryWords: 80,
+    maxBodyCharacters: 60000,
+    maxCommentCharacters: 10000
   },
   models: {
     create: { model: 'gpt-5.6-luna', reasoningEffort: 'medium' },
