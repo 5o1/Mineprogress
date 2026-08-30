@@ -26,36 +26,76 @@ export function findControlPlaneNarration(text) {
   return checks.filter(([, expression]) => expression.test(text)).map(([label]) => label);
 }
 
-function validateHistoricalProgress(body, prefix) {
+const PROPOSAL_SECTIONS = [
+  'Abstract',
+  'Background and Significance',
+  'Problem Statement',
+  'Objectives',
+  'Scope and Research Questions',
+  'Methodology and Technical Approach',
+  'Expected Deliverables and Evaluation Criteria',
+  'Work Plan and Milestones',
+  'Risks, Constraints, and Security'
+];
+
+function managedSection(body, prefix) {
   const errors = [];
   const start = body.indexOf(MANAGED_BODY_START);
   const end = body.indexOf(MANAGED_BODY_END, start + MANAGED_BODY_START.length);
   if (start < 0 || end < 0) {
     errors.push(`${prefix} must contain both Mineprogress managed-section markers.`);
-    return errors;
+    return { errors, managed: '' };
   }
   if (body.indexOf(MANAGED_BODY_START, start + 1) >= 0 || body.indexOf(MANAGED_BODY_END, end + 1) >= 0) {
     errors.push(`${prefix} must contain exactly one Mineprogress managed section.`);
   }
-  const managed = body.slice(start + MANAGED_BODY_START.length, end);
-  if (!/^## Historical Progress\s*$/mu.test(managed)) {
-    errors.push(`${prefix} must contain a Historical Progress section.`);
+  return { errors, managed: body.slice(start + MANAGED_BODY_START.length, end) };
+}
+
+function validateProposal(body, prefix) {
+  const { errors, managed } = managedSection(body, prefix);
+  if (!managed) return errors;
+  if (/^## Historical Progress\s*$/imu.test(managed)) {
+    errors.push(`${prefix} must not store Historical Progress in the proposal body.`);
   }
-  if (/^## Current Progress\s*$/imu.test(managed)) {
-    errors.push(`${prefix} must not contain a Current Progress section.`);
+  let previous = -1;
+  for (const section of PROPOSAL_SECTIONS) {
+    const expression = new RegExp(`^## ${section.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\s*$`, 'mu');
+    const match = expression.exec(managed);
+    if (!match) {
+      errors.push(`${prefix} is missing proposal section: ${section}.`);
+      continue;
+    }
+    if (match.index <= previous) errors.push(`${prefix} proposal sections must use the required order.`);
+    previous = match.index;
+    const contentStart = match.index + match[0].length;
+    const nextHeading = managed.slice(contentStart).search(/^## /mu);
+    const content = managed.slice(contentStart, nextHeading < 0 ? undefined : contentStart + nextHeading).trim();
+    if (!content) errors.push(`${prefix} proposal section ${section} must not be empty.`);
   }
-  const segments = [...managed.matchAll(/^### (\d{4}-\d{2}-\d{2})\s+[—-]\s+.+$/gmu)];
-  if (!segments.length) errors.push(`${prefix} must contain at least one dated history segment.`);
-  let previous = '';
-  for (const [index, segment] of segments.entries()) {
-    const date = segment[1];
-    if (previous && date < previous) errors.push(`${prefix} history segments must be chronological.`);
-    previous = date;
-    const start = segment.index + segment[0].length;
-    const segmentEnd = segments[index + 1]?.index ?? managed.length;
-    const content = managed.slice(start, segmentEnd);
-    if (!/^#### Requirements\s*$/mu.test(content)) errors.push(`${prefix} segment ${date} is missing Requirements.`);
-    if (!/^#### Results\s*$/mu.test(content)) errors.push(`${prefix} segment ${date} is missing Results.`);
+  return errors;
+}
+
+function validateProgressUpdate(text, prefix) {
+  const errors = [];
+  if (!/^## Progress Update\s+[—-]\s+\d{4}-\d{2}-\d{2}(?:\s+[—-]\s+.+)?\s*$/mu.test(text)) {
+    errors.push(`${prefix} must start with a dated Progress Update heading.`);
+  }
+  const requirements = /^### Requirements\s*$/mu.exec(text);
+  const results = /^### Results\s*$/mu.exec(text);
+  if (!requirements) errors.push(`${prefix} is missing Requirements.`);
+  if (!results) errors.push(`${prefix} is missing Results.`);
+  if (requirements && results && requirements.index >= results.index) {
+    errors.push(`${prefix} must place Requirements before Results.`);
+  }
+  for (const [name, match, next] of [
+    ['Requirements', requirements, results],
+    ['Results', results, null]
+  ]) {
+    if (!match) continue;
+    const start = match.index + match[0].length;
+    const content = text.slice(start, next?.index ?? text.length).trim();
+    if (!content) errors.push(`${prefix} ${name} must not be empty.`);
   }
   return errors;
 }
@@ -72,7 +112,7 @@ function preservesManualBody(existing, proposed) {
     existing.slice(oldEnd + MANAGED_BODY_END.length) === proposed.slice(newEnd + MANAGED_BODY_END.length);
 }
 
-function validateOptionalText(value, prefix, maxCharacters, { historical = false } = {}) {
+function validateOptionalText(value, prefix, maxCharacters, { format = null } = {}) {
   const errors = [];
   if (value === undefined || value === null) return errors;
   if (typeof value !== 'string' || !value.trim()) return [`${prefix} must be non-empty text or null.`];
@@ -81,21 +121,12 @@ function validateOptionalText(value, prefix, maxCharacters, { historical = false
   for (const narration of findControlPlaneNarration(value)) {
     errors.push(`${prefix} contains transient Mineprogress control-plane narration (${narration}).`);
   }
-  if (historical) errors.push(...validateHistoricalProgress(value, prefix));
+  if (format === 'proposal') errors.push(...validateProposal(value, prefix));
+  if (format === 'progress') errors.push(...validateProgressUpdate(value, prefix));
   return errors;
 }
 
-function requiredPendingLines(body) {
-  const start = body.indexOf(MANAGED_BODY_START);
-  const end = body.indexOf(MANAGED_BODY_END, start + MANAGED_BODY_START.length);
-  if (start < 0 || end < 0) return [];
-  return body.slice(start + MANAGED_BODY_START.length, end)
-    .split(/\r?\n/u)
-    .map(line => line.trim())
-    .filter(Boolean);
-}
-
-function validatePendingPreservation(plan, existingPlan, allowedIds) {
+function validatePendingPreservation(plan, existingPlan, allowedIds, itemsById) {
   const errors = [];
   const proposed = new Map((plan.updates || []).map(update => [update.itemId, update]));
   for (const existing of existingPlan?.updates || []) {
@@ -111,15 +142,16 @@ function validatePendingPreservation(plan, existingPlan, allowedIds) {
         errors.push(`updates for ${existing.itemId} drop pending ${field}.`);
       }
     }
-    if (existing.comment && next.comment !== existing.comment) {
-      errors.push(`updates for ${existing.itemId} must preserve the pending comment verbatim.`);
+    if (existing.comment && !next.comment?.startsWith(existing.comment)) {
+      errors.push(`updates for ${existing.itemId} must preserve the pending comment as an exact prefix.`);
     }
     if (existing.body && next.body) {
-      for (const line of requiredPendingLines(existing.body)) {
-        if (!next.body.includes(line)) {
-          errors.push(`updates for ${existing.itemId} drop approved managed-body content: ${line.slice(0, 80)}.`);
-          break;
-        }
+      const item = itemsById.get(existing.itemId);
+      const preserved = item?.contentType === 'draft'
+        ? next.body.startsWith(existing.body)
+        : next.body === existing.body;
+      if (!preserved) {
+        errors.push(`updates for ${existing.itemId} alter a pending immutable body.`);
       }
     }
   }
@@ -144,6 +176,7 @@ export function validatePlan(plan, {
   const itemsById = new Map(normalizedBoundItems.map(item => [item.itemId, item]));
   const allowedIds = new Set(itemsById.keys());
   const allowedStatusNames = new Set(allowedStatuses);
+  const existingById = new Map((existingPlan?.updates || []).map(update => [update.itemId, update]));
   const seen = new Set();
   for (const [index, update] of (Array.isArray(plan.updates) ? plan.updates : []).entries()) {
     const prefix = `updates[${index}]`;
@@ -170,12 +203,38 @@ export function validatePlan(plan, {
         errors.push(`${prefix}.summary contains transient Mineprogress control-plane narration (${narration}).`);
       }
     }
-    errors.push(...validateOptionalText(update.body, `${prefix}.body`, maxBodyCharacters, { historical: true }));
-    errors.push(...validateOptionalText(update.comment, `${prefix}.comment`, maxCommentCharacters));
+    const existing = existingById.get(update.itemId);
+    if (update.body !== undefined && update.body !== null) {
+      const carriedProposal = Boolean(existing?.body && update.body === existing.body && item?.pendingBodyKind === 'proposalBody');
+      if (item?.contentType === 'issue') {
+        if (!item.proposalWritable && !carriedProposal) {
+          errors.push(`${prefix}.body is immutable after the initial created-item proposal.`);
+        }
+        errors.push(...validateOptionalText(update.body, `${prefix}.body`, maxBodyCharacters, { format: 'proposal' }));
+      } else if (item?.contentType === 'draft') {
+        if (item.proposalWritable || carriedProposal) {
+          errors.push(...validateOptionalText(update.body, `${prefix}.body`, maxBodyCharacters, { format: 'proposal' }));
+        } else {
+          const requiredPrefix = existing?.body || item.body || '';
+          if ([...update.body].length > maxBodyCharacters) {
+            errors.push(`${prefix}.body exceeds ${maxBodyCharacters} characters.`);
+          }
+          if (!update.body.startsWith(requiredPrefix) || update.body === requiredPrefix) {
+            errors.push(`${prefix}.body may only append to the exact Draft body.`);
+          } else {
+            errors.push(...validateOptionalText(update.body.slice(requiredPrefix.length).trim(), `${prefix}.body append`, maxBodyCharacters, { format: 'progress' }));
+          }
+        }
+      } else {
+        errors.push(...validateOptionalText(update.body, `${prefix}.body`, maxBodyCharacters));
+      }
+    }
+    errors.push(...validateOptionalText(update.comment, `${prefix}.comment`, maxCommentCharacters, { format: 'progress' }));
     if (update.body && item?.contentType && !['issue', 'draft'].includes(item.contentType)) {
       errors.push(`${prefix}.body cannot update ${item.contentType} content.`);
     }
-    if (update.body && item && !preservesManualBody(item.body || '', update.body)) {
+    if (update.body && item && (item.contentType !== 'draft' || item.proposalWritable) &&
+        !preservesManualBody(item.body || '', update.body)) {
       errors.push(`${prefix}.body changes content outside the managed section.`);
     }
     if (update.comment && item?.contentType && !['issue', 'pullRequest'].includes(item.contentType)) {
@@ -183,7 +242,7 @@ export function validatePlan(plan, {
     }
   }
   if (Array.isArray(plan.updates)) {
-    errors.push(...validatePendingPreservation(plan, existingPlan, allowedIds));
+    errors.push(...validatePendingPreservation(plan, existingPlan, allowedIds, itemsById));
   }
   return { valid: errors.length === 0, errors };
 }

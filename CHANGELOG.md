@@ -10,7 +10,7 @@ Notable user-visible changes are documented here. Entries follow
 - Guided initialization from a GitHub Project URL, including linked-repository discovery.
 - Background generation and independent review of thread-bound Kanban updates.
 - Full-thread backfill for newly bound items, including conversation history from before plugin installation.
-- Managed Issue and Draft bodies with chronological Requirements/Results history and recoverable Issue comments.
+- One-time academic project proposals with recoverable, dated progress comments.
 - Separate runtime contracts for create, bind, incremental updates, and reviewer checks.
 - Guided detection of a configurable default Kanban status and conventional terminal statuses.
 - Explicit synchronized deletion that closes linked Issues before removing Project items.
@@ -19,7 +19,8 @@ Notable user-visible changes are documented here. Entries follow
 
 - Deferred Project submissions remain queued until GitHub read-back confirms every field update.
 - Stop persists the turn locally and delegates model work to a non-blocking asynchronous Hook.
-- Project summaries remain concise while detailed progress is maintained in the item's body.
+- Project summaries remain concise while Issue comments retain append-only progress history.
+- Draft progress uses append-only body suffixes because GitHub Draft items do not support comments.
 - Unsubmitted legacy summary plans are replaced by a full structured-history backfill after upgrade.
 
 ### Fixed
@@ -36,3 +37,5 @@ Notable user-visible changes are documented here. Entries follow
   reopen linked Issues.
 - State, configuration, and metadata writes retry transient Windows rename contention, and the
   background Hook now locks its initial state read.
+- Script validation and operation construction lock Issue bodies after their initial proposal,
+  enforce exact-prefix Draft appends, and re-read remote bodies before mutation.

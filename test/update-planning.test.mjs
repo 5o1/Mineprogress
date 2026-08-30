@@ -77,6 +77,7 @@ test('reviewed incremental plan is stored before one later GitHub submission', a
   assert.equal(prepared.context.length, 2);
   assert.deepEqual(prepared.promptNames, ['bind']);
   assert.equal(prepared.boundItems[0].backfillRequested, true);
+  assert.equal(prepared.boundItems[0].proposalWritable, false);
   assert.equal((await run(['update', 'stage', '--plan', planFile, '--session', 'session-1', '--data-dir', dataDir])).accepted, true);
   const planned = await run(['update', 'apply', '--review', reviewFile, '--session', 'session-1', '--data-dir', dataDir]);
   assert.equal(planned.queuedOperations, 2);

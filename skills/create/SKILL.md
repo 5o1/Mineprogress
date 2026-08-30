@@ -16,6 +16,7 @@ node <plugin-root>/scripts/mineprogress.mjs create --title <title> --session <se
 
 The CLI selects a repository issue or Project draft from the configured visibility route and binds
 the resulting Project item immediately, assigning `kanban.defaultStatus` before it returns. Do not
-create additional items or infer a title from earlier conversation. The next asynchronous Stop pass loads `prompts/create.md` only into its isolated
-generator and uses the configured create model to backfill a structured long-form body from the full
-thread, including context from before installation. Do not run update manually for that backfill.
+create additional items or infer a title from earlier conversation. The next asynchronous Stop pass
+loads `prompts/create.md` only into its isolated generator and creates the one-time academic project
+proposal from the full thread, including context from before installation. The script locks an Issue
+body after that proposal is confirmed. Do not run update manually for the backfill.

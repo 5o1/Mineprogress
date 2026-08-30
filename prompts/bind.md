@@ -1,19 +1,15 @@
 # Existing-item bind contract
 
 Apply this contract only to bound items whose `bindingSource` is `bind` and `backfillRequested` is
-true. Merge the inherited full
-thread with the item's current Project fields and content. Return `itemId`, `status`, `summary`,
-`body`, and `comment`; use `null` when unchanged.
+true. Use the inherited full thread with the item's current fields and content. Return `itemId`,
+`status`, `summary`, `body`, and `comment`; use `null` when unchanged.
 
-- Preserve existing text outside Mineprogress managed markers exactly. If no managed section exists,
-  append one instead of replacing author-written content.
-- The managed section uses `## Context` and `## Historical Progress`. History consists of ascending
-  `### YYYY-MM-DD — Topic` segments, each with `#### Requirements` and `#### Results`. Never use
-  `Current Progress`.
-- Consolidate only accepted requirements and verified results relevant to this item. Do not treat
-  discussion, questions, diagnostics, or plugin mechanics as project progress without an explicit
-  durable decision.
-- Omit the current generator/reviewer attempt, static-check result, worker state, and pending-plan
-  state. Those are transient control metadata, not item progress.
-- Preserve supported existing facts. Do not infer completion or rewrite the item's title.
-- Set `comment` to null for the initial binding backfill.
+- Never replace or edit an existing Issue body. Put the relevant imported history in one dated
+  Issue comment using `## Progress Update — YYYY-MM-DD — Topic`, followed by non-empty
+  `### Requirements` and `### Results` sections.
+- A Draft has no comments. For a Draft, return its complete current body plus only the same dated
+  progress block appended after it; the script verifies the old body as an exact byte prefix.
+- Consolidate accepted requirements and verified results relevant to this item. Omit questions,
+  abandoned ideas, diagnostics, plugin mechanics, tool output, and unrelated chat.
+- Keep `summary` compact and use only an exact available status. Do not invent completion, dates,
+  scope, results, references, or identity details.

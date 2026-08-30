@@ -26,8 +26,8 @@ $mineprogress:check
 $mineprogress:status
 ```
 
-- `create` creates and binds an item, then backfills its long-form Historical Progress from the complete earlier thread.
-- `bind` adds an existing Project item and preserves manual content while adding managed history.
+- `create` creates and binds an item, then writes a one-time academic project proposal from the complete earlier thread.
+- `bind` adds an existing Project item without replacing its existing Issue body.
 - `unbind` normally removes only the thread binding; explicit `--delete` also closes a linked Issue
   and removes the Project item.
 - `check` discovers actual Kanban statuses and suggests items to bind or unbind without changing them.

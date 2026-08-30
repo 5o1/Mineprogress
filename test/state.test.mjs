@@ -47,7 +47,7 @@ test('legacy unsubmitted plans are discarded and scheduled for structured backfi
   state.pendingPlan = { plan: { updates: [{ itemId: 'PVTI_1', summary: 'Old summary.' }] }, attempts: [] };
   await writeState(dataDir, state);
   const migrated = await readState(dataDir, 'legacy');
-  assert.equal(migrated.planFormatVersion, 3);
+  assert.equal(migrated.planFormatVersion, 4);
   assert.equal(migrated.pendingPlan, null);
   assert.ok(migrated.fullContextRequestedRevision > migrated.fullContextPlannedRevision);
   assert.equal(migrated.boundItems[0].backfillRevision, migrated.fullContextRequestedRevision);
@@ -64,9 +64,23 @@ test('legacy plans with an attempted submission remain recoverable during migrat
   };
   await writeState(dataDir, state);
   const migrated = await readState(dataDir, 'attempted-legacy');
-  assert.equal(migrated.planFormatVersion, 3);
+  assert.equal(migrated.planFormatVersion, 4);
   assert.notEqual(migrated.pendingPlan, null);
   assert.ok(migrated.fullContextRequestedRevision > migrated.fullContextPlannedRevision);
+});
+
+test('plan format migration reopens only created-item proposal initialization', async t => {
+  const dataDir = await temporaryData(t);
+  const { state } = await openSession(dataDir, 'proposal-migration');
+  bindItem(state, { itemId: 'CREATED', title: 'Created' }, { source: 'create' });
+  bindItem(state, { itemId: 'BOUND', title: 'Bound' }, { source: 'bind' });
+  delete state.boundItems[0].proposalInitialized;
+  delete state.boundItems[1].proposalInitialized;
+  state.planFormatVersion = 3;
+  await writeState(dataDir, state);
+  const migrated = await readState(dataDir, 'proposal-migration');
+  assert.equal(migrated.boundItems[0].proposalInitialized, false);
+  assert.equal(migrated.boundItems[1].proposalInitialized, true);
 });
 
 test('planning and submission advance separate incremental checkpoints', async t => {
@@ -143,6 +157,7 @@ test('a binding can start a full-history update without locally journaled contex
   const state = newStateForTest();
   bindItem(state, { itemId: 'PVTI_1', title: 'Imported thread task' }, { source: 'create' });
   assert.equal(state.boundItems[0].bindingSource, 'create');
+  assert.equal(state.boundItems[0].proposalInitialized, false);
   assert.equal(state.boundItems[0].backfillRevision, 1);
   const run = beginUpdate(state, 'full-run');
   assert.equal(run.toSequence, 0);
@@ -151,10 +166,25 @@ test('a binding can start a full-history update without locally journaled contex
   assert.equal(state.fullContextPlannedRevision, 1);
   bindItem(state, { itemId: 'PVTI_2', title: 'Existing item' }, { source: 'bind' });
   assert.equal(state.boundItems[1].bindingSource, 'bind');
+  assert.equal(state.boundItems[1].proposalInitialized, true);
   assert.equal(state.boundItems[1].backfillRevision, 2);
   completeUpdate(state, beginUpdate(state, 'second-full-run').runId);
   assert.equal(state.fullContextPlannedRevision, 2);
   assert.equal(beginUpdate(state), null);
+});
+
+test('successful proposal submission permanently initializes the created-item body', () => {
+  const state = newStateForTest();
+  bindItem(state, { itemId: 'PVTI_1', title: 'Created item' }, { source: 'create' });
+  const run = beginUpdate(state, 'proposal-run');
+  storePendingPlan(state, run.runId, {
+    updates: [{ itemId: 'PVTI_1', body: 'Proposal' }]
+  }, {
+    projectId: 'PVT_1',
+    operations: [{ itemId: 'PVTI_1', kind: 'proposalBody' }]
+  }, { decision: 'approve', reason: 'Valid proposal.' });
+  completeSubmission(state);
+  assert.equal(state.boundItems[0].proposalInitialized, true);
 });
 
 test('bindings retain linked content metadata for explicit synchronized deletion', () => {

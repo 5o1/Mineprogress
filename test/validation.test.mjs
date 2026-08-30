@@ -9,6 +9,33 @@ const options = {
   maxWords: 20
 };
 
+const proposal = `<!-- mineprogress:managed:start -->
+## Abstract
+Build a deterministic parser.
+## Background and Significance
+Input handling needs a reliable implementation.
+## Problem Statement
+Existing parsing behavior is incomplete.
+## Objectives
+Implement and verify the parser.
+## Scope and Research Questions
+Cover supported input syntax and error cases.
+## Methodology and Technical Approach
+Use a small parser with deterministic native tests.
+## Expected Deliverables and Evaluation Criteria
+Deliver source code with passing tests.
+## Work Plan and Milestones
+Design, implement, test, and review.
+## Risks, Constraints, and Security
+Reject malformed input and avoid sensitive data.
+<!-- mineprogress:managed:end -->`;
+
+const progress = `## Progress Update — 2026-08-30 — Parser
+### Requirements
+- Parse supported input.
+### Results
+- Parser tests pass.`;
+
 test('static plan validation accepts a bound concise update and approved no-op', () => {
   assert.equal(validatePlan({ updates: [{ itemId: 'PVTI_1', status: 'Done', summary: 'Parser implemented and tested.' }] }, options).valid, true);
   assert.equal(validatePlan({ updates: [] }, options).valid, true);
@@ -31,63 +58,53 @@ test('static plan validation rejects update-pipeline narration', () => {
   assert.match(report.errors.join(' '), /control-plane narration/);
 });
 
-test('managed bodies require chronological Historical Progress segments', () => {
-  const bodyOptions = {
+test('only a writable created item accepts the one-time academic proposal', () => {
+  const writable = {
     ...options,
-    boundItems: [{ itemId: 'PVTI_1', contentType: 'issue' }]
+    boundItems: [{ itemId: 'PVTI_1', contentType: 'issue', proposalWritable: true, body: '' }]
   };
-  const validBody = '<!-- mineprogress:managed:start -->\n## Context\nParser.\n## Historical Progress\n### 2026-08-29 — Design\n#### Requirements\n- Parse.\n#### Results\n- Designed.\n### 2026-08-30 — Delivery\n#### Requirements\n- Test.\n#### Results\n- Passed.\n<!-- mineprogress:managed:end -->';
-  assert.equal(validatePlan({ updates: [{ itemId: 'PVTI_1', body: validBody }] }, bodyOptions).valid, true);
-  const manualOptions = {
-    ...bodyOptions,
-    boundItems: [{ itemId: 'PVTI_1', contentType: 'issue', body: `Manual preface.\n\n${validBody}\n\nManual appendix.` }]
+  assert.equal(validatePlan({ updates: [{ itemId: 'PVTI_1', body: proposal }] }, writable).valid, true);
+
+  const locked = {
+    ...options,
+    boundItems: [{ itemId: 'PVTI_1', contentType: 'issue', proposalWritable: false, body: proposal }]
   };
-  assert.equal(validatePlan({ updates: [{
-    itemId: 'PVTI_1', body: `Changed preface.\n\n${validBody}\n\nManual appendix.`
-  }] }, manualOptions).valid, false);
-  const invalidBody = validBody
-    .replace('## Historical Progress', '## Current Progress')
-    .replace('### 2026-08-29 — Design', '### 2026-08-31 — Design');
-  const report = validatePlan({ updates: [{ itemId: 'PVTI_1', body: invalidBody }] }, bodyOptions);
+  const report = validatePlan({ updates: [{ itemId: 'PVTI_1', body: `${proposal}\nChanged.` }] }, locked);
   assert.equal(report.valid, false);
-  assert.match(report.errors.join(' '), /Historical Progress|Current Progress|chronological/);
+  assert.match(report.errors.join(' '), /immutable/);
 });
 
-test('incremental plans cannot discard reviewed fields or managed history', () => {
-  const existingBody = '<!-- mineprogress:managed:start -->\n## Context\nParser.\n## Historical Progress\n### 2026-08-29 \u2014 Design\n#### Requirements\n- Parse.\n#### Results\n- Designed.\n<!-- mineprogress:managed:end -->';
-  const existingPlan = {
-    updates: [{
-      itemId: 'PVTI_1',
-      summary: 'Parser design is ready.',
-      body: existingBody,
-      comment: 'Parser design completed.'
-    }]
-  };
-  const bodyOptions = {
+test('Issue history uses comments while Draft history is exact-prefix append-only', () => {
+  const issueOptions = {
     ...options,
-    boundItems: [{ itemId: 'PVTI_1', contentType: 'issue' }],
+    boundItems: [{ itemId: 'PVTI_1', contentType: 'issue', proposalWritable: false, body: proposal }]
+  };
+  assert.equal(validatePlan({ updates: [{ itemId: 'PVTI_1', comment: progress }] }, issueOptions).valid, true);
+
+  const draftOptions = {
+    ...options,
+    boundItems: [{ itemId: 'PVTI_1', contentType: 'draft', proposalWritable: false, body: proposal }]
+  };
+  assert.equal(validatePlan({ updates: [{ itemId: 'PVTI_1', body: `${proposal}\n\n${progress}` }] }, draftOptions).valid, true);
+  const altered = validatePlan({ updates: [{ itemId: 'PVTI_1', body: `${proposal.replace('deterministic', 'fast')}\n\n${progress}` }] }, draftOptions);
+  assert.equal(altered.valid, false);
+  assert.match(altered.errors.join(' '), /append|outside/);
+});
+
+test('queued proposals stay exact and queued changelogs may only grow by suffix', () => {
+  const existingPlan = { updates: [{ itemId: 'PVTI_1', body: proposal, comment: progress }] };
+  const pendingOptions = {
+    ...options,
+    boundItems: [{
+      itemId: 'PVTI_1', contentType: 'issue', proposalWritable: false, pendingBodyKind: 'proposalBody', body: ''
+    }],
     existingPlan
   };
-  const discarded = validatePlan({
-    updates: [{ itemId: 'PVTI_1', summary: 'A later note.' }]
-  }, bodyOptions);
-  assert.equal(discarded.valid, false);
-  assert.match(discarded.errors.join(' '), /drop pending body/);
-  assert.match(discarded.errors.join(' '), /drop pending comment/);
-
-  const extendedBody = existingBody.replace(
-    '<!-- mineprogress:managed:end -->',
-    '### 2026-08-30 \u2014 Delivery\n#### Requirements\n- Test.\n#### Results\n- Passed.\n<!-- mineprogress:managed:end -->'
-  );
-  const preserved = validatePlan({
-    updates: [{
-      itemId: 'PVTI_1',
-      summary: 'Parser design and delivery are ready.',
-      body: extendedBody,
-      comment: 'Parser design completed.'
-    }]
-  }, bodyOptions);
-  assert.equal(preserved.valid, true, preserved.errors.join('\n'));
+  const appendedComment = `${progress}\n\n## Progress Update — 2026-08-31 — Review\n### Requirements\n- Review output.\n### Results\n- Review passed.`;
+  assert.equal(validatePlan({ updates: [{ itemId: 'PVTI_1', body: proposal, comment: appendedComment }] }, pendingOptions).valid, true);
+  const changed = validatePlan({ updates: [{ itemId: 'PVTI_1', body: proposal.replace('parser', 'compiler'), comment: progress }] }, pendingOptions);
+  assert.equal(changed.valid, false);
+  assert.match(changed.errors.join(' '), /immutable|pending/);
 });
 
 test('review output cannot rewrite the plan', () => {

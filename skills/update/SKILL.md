@@ -30,4 +30,6 @@ elevation failures with `record-error` and stop.
 Automatic Stop revisions run in the plugin's asynchronous background worker, not in the foreground
 agent using this Skill. Do not duplicate that work when a manual command was not requested.
 Runtime prompt files are loaded only into those isolated generator/reviewer processes, not this
-thread's global instructions. `preferFastMode` is a session preference, not a per-subagent option.
+thread's global instructions. Script validation and operation construction, not model compliance,
+enforce locked Issue bodies and append-only Draft bodies. `preferFastMode` is a session preference,
+not a per-subagent option.

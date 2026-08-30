@@ -5,7 +5,7 @@ import process from 'node:process';
 import { atomicWriteFile } from './atomic-file.mjs';
 
 const STATE_VERSION = 1;
-const PLAN_FORMAT_VERSION = 3;
+const PLAN_FORMAT_VERSION = 4;
 
 export function requireDataDir(env = process.env) {
   const dataDir = env.PLUGIN_DATA || env.MINEPROGRESS_DATA;
@@ -53,6 +53,7 @@ function normalizeState(state) {
     item.contentType ??= null;
     item.url ??= null;
     item.repository ??= null;
+    item.proposalInitialized ??= item.bindingSource !== 'create';
   }
   state.lastPlannedUpdate ??= state.lastSuccessfulUpdate || null;
   state.pendingPlan ??= null;
@@ -185,6 +186,7 @@ export function bindItem(state, item, { source = 'bind' } = {}) {
     contentType: item.contentType || item.kind || null,
     url: item.url || item.issueUrl || null,
     repository: item.repository || null,
+    proposalInitialized: source !== 'create',
     bindingSource: source,
     backfillRevision,
     boundAt: new Date().toISOString()
@@ -329,6 +331,12 @@ export function confirmSubmissionResponse(state, attemptId) {
 
 export function completeSubmission(state) {
   if (!state.pendingPlan) return false;
+  const proposalItemIds = new Set((state.pendingPlan.operations || [])
+    .filter(operation => operation.kind === 'proposalBody')
+    .map(operation => operation.itemId));
+  for (const binding of state.boundItems) {
+    if (proposalItemIds.has(binding.itemId)) binding.proposalInitialized = true;
+  }
   state.lastSuccessfulUpdate = {
     sequence: state.pendingPlan.throughSequence,
     completedAt: new Date().toISOString()

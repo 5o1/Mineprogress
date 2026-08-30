@@ -35,10 +35,10 @@ incrementally maintains one reviewed but unsubmitted plan:
    installation or binding are available without parsing the unstable transcript file format.
    Later passes select only the journal after the last planning checkpoint and the approved plan.
 2. Generate one consolidated replacement plan, then locally check fields, bound IDs, actual
-   statuses, size, managed-body structure, chronological history, preservation of manual body text,
-   obvious personal information, and exclusion of generator/reviewer control metadata. An
-   incremental replacement must retain every queued field and approved managed-history line until
-   GitHub confirms the prior plan.
+   statuses, size, proposal structure, locked Issue bodies, exact-prefix Draft appends, dated
+   progress entries, personal information, and exclusion of generator/reviewer control metadata.
+   An incremental replacement must retain every queued field and pending append until GitHub
+   confirms the prior plan.
 3. Launch a separate ephemeral Codex reviewer process to detect context dumping, irrelevant
    expansion, static failures, unsupported claims, and author-identifying data. Its checklist is a
    separate runtime file rather than part of global Skill discovery.
@@ -50,11 +50,13 @@ use the normal validation and review path even when a generator returns an empty
 
 The first full-history pass loads `prompts/create.md` for newly created items or `prompts/bind.md`
 for existing items. Later passes load `prompts/update.md`. These files are passed only to ephemeral
-generator processes and do not enter the foreground thread's global prompt. An Issue or Draft body
-contains a managed `Historical Progress` section with chronological dated segments; every segment
-separates Requirements from Results. Text outside the managed markers is preserved exactly. The
-Project `Update` field remains concise. A repository Issue receives a comment only for a meaningful
-new result or status transition; initial backfills, ordinary Q&A, and Draft items do not.
+generator processes and do not enter the foreground thread's global prompt. A created item receives
+one academic-style proposal covering background, problem, objectives, scope, method, deliverables,
+evaluation, milestones, and risks. After GitHub confirms that proposal, an Issue body is immutable.
+Meaningful later changes become dated Issue comments with Requirements and Results. Draft items do
+not support comments, so their complete prior body must remain an exact byte prefix of every update.
+The script enforces these constraints independently of generated instructions and re-reads remote
+bodies before mutation. The Project `Update` field remains concise.
 
 Both the generator and independent reviewer receive full history during backfill. A successful
 backfill records its own revision checkpoint; failure leaves the revision pending for another Stop.

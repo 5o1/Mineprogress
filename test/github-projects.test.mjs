@@ -136,8 +136,8 @@ test('prepared field updates are submitted in one GraphQL mutation', async () =>
   assert.deepEqual(result, { applied: 2 });
 });
 
-test('managed Issue body and progress comment are prepared, batched, and externally reconcilable', async () => {
-  const body = '<!-- mineprogress:managed:start -->\n## Context\nParser work.\n\n## Historical Progress\n### 2026-08-30 — Parser\n#### Requirements\n- Parse input.\n#### Results\n- Parser passes.\n<!-- mineprogress:managed:end -->';
+test('initial Issue proposal and progress comment are explicitly authorized and externally reconcilable', async () => {
+  const body = '<!-- mineprogress:managed:start -->\n## Abstract\nParser proposal.\n<!-- mineprogress:managed:end -->';
   const project = {
     id: 'PVT_1',
     fields: { nodes: [] },
@@ -147,12 +147,13 @@ test('managed Issue body and progress comment are prepared, batched, and externa
   };
   const prepared = prepareUpdateOperations(config, project, {
     updates: [{ itemId: 'PVTI_1', body, comment: 'Parser phase completed.' }]
-  });
-  assert.deepEqual(prepared.operations.map(operation => operation.kind), ['body', 'comment']);
+  }, { proposalBodyItemIds: ['PVTI_1'] });
+  assert.deepEqual(prepared.operations.map(operation => operation.kind), ['proposalBody', 'comment']);
   assert.match(prepared.operations[1].value.body, /mineprogress:comment:/);
 
   let submittedVariables;
   await applyPreparedOperations(async (query, variables) => {
+    if (query.startsWith('query')) return { node: { body: '' } };
     submittedVariables = variables;
     assert.match(query, /operation0:updateIssue/);
     assert.match(query, /operation1:addComment/);
@@ -175,8 +176,36 @@ test('managed Issue body and progress comment are prepared, batched, and externa
       }
     })
   });
-  assert.deepEqual(report.confirmed.map(operation => operation.kind), ['body', 'comment']);
+  assert.deepEqual(report.confirmed.map(operation => operation.kind), ['proposalBody', 'comment']);
   assert.equal(report.retryable.length, 0);
+});
+
+test('operation preparation locks Issue bodies and permits only exact Draft appends', async () => {
+  const issue = {
+    id: 'PVT_1', fields: { nodes: [] }, normalizedItems: [{
+      itemId: 'ISSUE_ITEM', contentId: 'I_1', contentType: 'issue', body: 'Proposal.'
+    }]
+  };
+  assert.throws(() => prepareUpdateOperations(config, issue, {
+    updates: [{ itemId: 'ISSUE_ITEM', body: 'Replacement.' }]
+  }), error => error.code === 'ISSUE_BODY_IMMUTABLE');
+
+  const draft = {
+    id: 'PVT_1', fields: { nodes: [] }, normalizedItems: [{
+      itemId: 'DRAFT_ITEM', contentId: 'DI_1', contentType: 'draft', body: 'Proposal.'
+    }]
+  };
+  assert.throws(() => prepareUpdateOperations(config, draft, {
+    updates: [{ itemId: 'DRAFT_ITEM', body: 'Changed.\nProgress.' }]
+  }), error => error.code === 'DRAFT_BODY_APPEND_ONLY');
+  const prepared = prepareUpdateOperations(config, draft, {
+    updates: [{ itemId: 'DRAFT_ITEM', body: 'Proposal.\n\nProgress.' }]
+  });
+  assert.equal(prepared.operations[0].kind, 'draftAppend');
+  await assert.rejects(applyPreparedOperations(async query => {
+    if (query.startsWith('query')) return { node: { body: 'Externally changed.' } };
+    throw new Error('Mutation must not run');
+  }, draft.id, prepared.operations), error => error.code === 'CONTENT_BODY_CONFLICT');
 });
 
 test('resume reconciliation distinguishes confirmed, retryable, and conflicting operations', async () => {

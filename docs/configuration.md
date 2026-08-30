@@ -32,8 +32,11 @@ configuration. `config.example.json` documents the complete schema; users do not
 
 `prompts/create.md`, `prompts/bind.md`, and `prompts/update.md` control generation behavior.
 `prompts/review-checklist.md` independently controls semantic review. They are packaged plugin
-resources loaded only for an active background update, not global Codex instructions. The managed
-body format uses `Historical Progress` with chronological Requirements/Results segments.
+resources loaded only for an active background update, not global Codex instructions. A created
+item receives one academic-style proposal. After confirmation, the script API rejects every Issue
+body mutation; Issue history is stored in dated comments. Drafts cannot receive comments, so their
+bodies may grow only by an exact-prefix append. Remote content is read again before either body
+mutation to prevent a stale plan from overwriting an external edit.
 
 `check` reads the real options from the Status field and saves them in the global plugin cache.
 Only configured `kanban.terminalStatuses` produce removal suggestions or synchronize linked Issues

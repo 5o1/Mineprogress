@@ -308,9 +308,10 @@ function commentMarker(key) {
   return `<!-- mineprogress:comment:${key.split(':').at(-1)} -->`;
 }
 
-export function prepareUpdateOperations(config, project, plan) {
+export function prepareUpdateOperations(config, project, plan, { proposalBodyItemIds = [] } = {}) {
   const fields = projectFields(project);
   const items = new Map((project.normalizedItems || []).map(item => [item.itemId, item]));
+  const proposalIds = new Set(proposalBodyItemIds);
   const operations = [];
   for (const update of plan.updates) {
     const item = items.get(update.itemId);
@@ -357,16 +358,26 @@ export function prepareUpdateOperations(config, project, plan) {
       if (!item?.contentId || !['issue', 'draft'].includes(item.contentType)) {
         throw infrastructureError('Project item does not support a managed body.', 'PROJECT_ITEM_BODY_UNSUPPORTED');
       }
-      if (item.body !== update.body) operations.push({
-        key: operationKey(update, 'body', update.body),
-        kind: 'body',
-        itemId: update.itemId,
-        contentId: item.contentId,
-        contentType: item.contentType,
-        before: item.body || '',
-        expected: update.body,
-        value: { body: update.body }
-      });
+      if (item.body !== update.body) {
+        const proposalWrite = proposalIds.has(update.itemId);
+        if (item.contentType === 'issue' && !proposalWrite) {
+          throw infrastructureError('Issue body is immutable after its initial proposal.', 'ISSUE_BODY_IMMUTABLE');
+        }
+        if (item.contentType === 'draft' && !proposalWrite && !update.body.startsWith(item.body || '')) {
+          throw infrastructureError('Draft body updates must append to the exact existing body.', 'DRAFT_BODY_APPEND_ONLY');
+        }
+        const kind = proposalWrite ? 'proposalBody' : 'draftAppend';
+        operations.push({
+          key: operationKey(update, kind, update.body),
+          kind,
+          itemId: update.itemId,
+          contentId: item.contentId,
+          contentType: item.contentType,
+          before: item.body || '',
+          expected: update.body,
+          value: { body: update.body }
+        });
+      }
     }
     if (update.comment) {
       if (!item?.contentId || !['issue', 'pullRequest'].includes(item.contentType)) {
@@ -429,7 +440,7 @@ export async function reconcilePreparedOperations(project, operations, { client 
     }
     const actual = operation.kind === 'status' ? item.status
       : operation.kind === 'summary' ? item.summary
-        : operation.kind === 'body' ? item.body
+        : ['proposalBody', 'draftAppend'].includes(operation.kind) ? item.body
           : operation.kind === 'issueState' ? item.contentState : undefined;
     if (actual === operation.expected) confirmed.push(operation);
     else if (actual === operation.before) retryable.push(operation);
@@ -440,6 +451,19 @@ export async function reconcilePreparedOperations(project, operations, { client 
 
 export async function applyPreparedOperations(client, projectId, operations) {
   if (!operations.length) return { applied: 0 };
+  for (const operation of operations.filter(candidate => ['proposalBody', 'draftAppend'].includes(candidate.kind))) {
+    const query = `query($id:ID!) { node(id:$id) {
+      ... on Issue { body }
+      ... on DraftIssue { body }
+    } }`;
+    const data = await client(query, { id: operation.contentId });
+    if (data.node?.body !== operation.before) {
+      throw infrastructureError('Content body changed after planning; refusing to overwrite it.', 'CONTENT_BODY_CONFLICT');
+    }
+    if (operation.kind === 'draftAppend' && !operation.expected.startsWith(data.node.body)) {
+      throw infrastructureError('Draft body mutation is not append-only.', 'DRAFT_BODY_APPEND_ONLY');
+    }
+  }
   const hasProjectFields = operations.some(operation => ['status', 'summary'].includes(operation.kind));
   const definitions = hasProjectFields ? ['$projectId:ID!'] : [];
   const selections = [];
@@ -460,9 +484,9 @@ export async function applyPreparedOperations(client, projectId, operations) {
       definitions.push(`$contentId${index}:ID!`, `$body${index}:String!`);
       variables[`contentId${index}`] = operation.contentId;
       variables[`body${index}`] = operation.value.body;
-      if (operation.kind === 'body' && operation.contentType === 'issue') {
+      if (operation.kind === 'proposalBody' && operation.contentType === 'issue') {
         selections.push(`operation${index}:updateIssue(input:{id:$contentId${index},body:$body${index}}) { issue { id } }`);
-      } else if (operation.kind === 'body' && operation.contentType === 'draft') {
+      } else if (['proposalBody', 'draftAppend'].includes(operation.kind) && operation.contentType === 'draft') {
         selections.push(`operation${index}:updateProjectV2DraftIssue(input:{draftIssueId:$contentId${index},body:$body${index}}) { draftIssue { id } }`);
       } else if (operation.kind === 'comment') {
         selections.push(`operation${index}:addComment(input:{subjectId:$contentId${index},body:$body${index}}) { commentEdge { node { id } } }`);
@@ -484,10 +508,14 @@ export async function applyPreparedOperations(client, projectId, operations) {
   return { applied: operations.length };
 }
 
-export async function applyUpdatePlan(config, client, plan, { alreadyApplied = [], onApplied = async () => {} } = {}) {
+export async function applyUpdatePlan(config, client, plan, {
+  alreadyApplied = [],
+  onApplied = async () => {},
+  proposalBodyItemIds = []
+} = {}) {
   if (!plan.updates.length) return { applied: 0, operations: [...alreadyApplied] };
   const project = await readProject(config, client);
-  const prepared = prepareUpdateOperations(config, project, plan);
+  const prepared = prepareUpdateOperations(config, project, plan, { proposalBodyItemIds });
   const completed = new Set(alreadyApplied);
   let applied = 0;
   for (const operation of prepared.operations) {

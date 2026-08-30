@@ -400,20 +400,7 @@ async function prepareUpdate(dataDir, sessionId) {
   });
   if (!state) return { outcome: 'noop', reason: 'No items remain bound; checkpoint advanced.' };
   const run = state.activeUpdate;
-  const boundIds = new Set(state.boundItems.map(item => item.itemId));
-  const bindings = new Map(state.boundItems.map(item => [item.itemId, item]));
-  const boundItems = project.normalizedItems
-    .filter(item => boundIds.has(item.itemId))
-    .map(item => {
-      const binding = bindings.get(item.itemId);
-      return {
-        ...item,
-        bindingSource: binding?.bindingSource || 'bind',
-        backfillRequested: Boolean(run.useThreadHistory &&
-          (binding?.backfillRevision || 1) > (state.fullContextPlannedRevision || 0) &&
-          (binding?.backfillRevision || 1) <= run.fullContextRevision)
-      };
-    });
+  const boundItems = validationBoundItems(state, run, project.normalizedItems);
   const promptNames = run.useThreadHistory
     ? [...new Set(boundItems.filter(item => item.backfillRequested)
       .map(item => item.bindingSource === 'create' ? 'create' : 'bind'))]
@@ -441,12 +428,33 @@ async function prepareUpdate(dataDir, sessionId) {
       itemId: 'bound-id',
       status: 'exact available status name or null',
       summary: 'concise Project field text or null',
-      body: 'complete managed long-form body or null',
-      comment: 'meaningful Issue progress comment or null'
+      body: 'one-time created-item proposal, complete append-only Draft body, queued proposal copy, or null',
+      comment: 'dated append-only Issue progress entry or null'
     }] },
     boundItems,
     context: pendingJournal(state).filter(event => event.sequence <= run.toSequence)
   };
+}
+
+function validationBoundItems(state, run, projectItems) {
+  const boundIds = new Set(state.boundItems.map(item => item.itemId));
+  const bindings = new Map(state.boundItems.map(item => [item.itemId, item]));
+  const pendingBodyKinds = new Map((state.pendingPlan?.operations || [])
+    .filter(operation => ['proposalBody', 'draftAppend'].includes(operation.kind))
+    .map(operation => [operation.itemId, operation.kind]));
+  return projectItems.filter(item => boundIds.has(item.itemId)).map(item => {
+    const binding = bindings.get(item.itemId);
+    const backfillRequested = Boolean(run.useThreadHistory &&
+      (binding?.backfillRevision || 1) > (state.fullContextPlannedRevision || 0) &&
+      (binding?.backfillRevision || 1) <= run.fullContextRevision);
+    return {
+      ...item,
+      bindingSource: binding?.bindingSource || 'bind',
+      backfillRequested,
+      proposalWritable: Boolean(backfillRequested && binding?.bindingSource === 'create' && !binding.proposalInitialized),
+      pendingBodyKind: pendingBodyKinds.get(item.itemId) || null
+    };
+  });
 }
 
 async function exhaustIfNeeded(dataDir, state, config, stage, message) {
@@ -486,8 +494,13 @@ async function stageUpdate(dataDir, sessionId, flags) {
     state.activeUpdate.attempt++;
     const incrementalNoop = !state.activeUpdate.useThreadHistory &&
       Array.isArray(plan?.updates) && plan.updates.length === 0;
+    const validationItems = validationBoundItems(
+      state,
+      state.activeUpdate,
+      state.activeUpdate.projectSnapshot.normalizedItems
+    );
     const report = validatePlan(plan, {
-      boundItems: state.activeUpdate.projectSnapshot.normalizedItems,
+      boundItems: validationItems,
       allowedStatuses: metadata.availableStatuses,
       maxCharacters: config.update.maxSummaryCharacters,
       maxWords: config.update.maxSummaryWords,
@@ -509,6 +522,11 @@ async function stageUpdate(dataDir, sessionId, flags) {
       await writeState(dataDir, state);
       return { accepted: true, noop: true, pendingRetained, attempt, planningCheckpointAdvanced: true };
     }
+    const itemsById = new Map(validationItems.map(item => [item.itemId, item]));
+    state.activeUpdate.proposalBodyItemIds = plan.updates
+      .filter(update => update.body && (itemsById.get(update.itemId)?.proposalWritable ||
+        itemsById.get(update.itemId)?.pendingBodyKind === 'proposalBody'))
+      .map(update => update.itemId);
     state.activeUpdate.stagedPlan = plan;
     state.activeUpdate.staticReport = report;
     await writeState(dataDir, state);
@@ -551,7 +569,12 @@ async function applyUpdate(dataDir, sessionId, flags) {
     const runId = state.activeUpdate.runId;
     state.activeUpdate.approvedReview = review;
     await writeState(dataDir, state);
-    const submission = prepareUpdateOperations(config, state.activeUpdate.projectSnapshot || projectSnapshot, state.activeUpdate.stagedPlan);
+    const submission = prepareUpdateOperations(
+      config,
+      state.activeUpdate.projectSnapshot || projectSnapshot,
+      state.activeUpdate.stagedPlan,
+      { proposalBodyItemIds: state.activeUpdate.proposalBodyItemIds || [] }
+    );
     const pending = storePendingPlan(state, runId, state.activeUpdate.stagedPlan, submission, review);
     await writeState(dataDir, state);
     return {
