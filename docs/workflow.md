@@ -73,6 +73,9 @@ then marks the superseded error handled. Without new evidence it remains dormant
 manual `update retry` is an optional override rather than a recovery requirement.
 An internal update-engine revision also grants one fresh bounded run after an installed engine fix,
 so an upgrade can recover its predecessor without requiring synthetic user input.
+When review identifies a durable requirement whose result evidence has not arrived, the run pauses
+without spending its remaining content attempts. Later journal evidence automatically resumes the
+combined batch.
 
 UserPromptSubmit never classifies natural-language status intent. The background generator evaluates
 the journal semantically from the verified per-item evidence ledger, pending reviewed evidence,

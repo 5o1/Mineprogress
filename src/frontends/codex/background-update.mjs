@@ -169,7 +169,7 @@ export async function runBackgroundUpdate(dataDir, sessionId, {
   try {
     while (true) {
       const prepared = await runCommand(['update', 'prepare', '--session', sessionId, '--data-dir', dataDir]);
-      if (['noop', 'pending_submission', 'paused_no_bindings'].includes(prepared.outcome)) {
+      if (['noop', 'pending_submission', 'paused_no_bindings', 'awaiting_evidence'].includes(prepared.outcome)) {
         if (await settleBackgroundRequest(dataDir, sessionId)) continue;
         return prepared;
       }
@@ -239,6 +239,7 @@ export async function runBackgroundUpdate(dataDir, sessionId, {
         await reviewInput.cleanup();
       }
       if (applied.paused) return { outcome: 'submission_unverified' };
+      if (applied.awaitingEvidence) return { outcome: 'awaiting_evidence', errors: applied.errors };
       if (applied.exhausted) return applied;
       if (applied.planned) {
         if (await settleBackgroundRequest(dataDir, sessionId)) continue;

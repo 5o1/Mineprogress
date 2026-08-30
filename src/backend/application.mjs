@@ -47,6 +47,7 @@ import {
   mergeEvidenceFacts,
   pendingPlanIsCurrent,
   readState,
+  recoverEvidencePausedUpdate,
   recoverExhaustedUpdate,
   recordPreparedUpdate,
   recordReviewedUpdate,
@@ -469,7 +470,7 @@ async function prepareUpdate(dataDir, sessionId, runtime) {
     if (state.pendingPlan?.attempts?.length) {
       return { result: { outcome: 'submission_unverified', reason: 'Verify the earlier submission with update submit before revising the plan.' } };
     }
-    const run = recoverExhaustedUpdate(state) || beginUpdate(state);
+    const run = recoverExhaustedUpdate(state) || recoverEvidencePausedUpdate(state) || beginUpdate(state);
     if (!run) {
       if (state.pendingPlan) {
         return { result: { outcome: 'pending_submission', updates: state.pendingPlan.plan.updates.length, throughSequence: state.pendingPlan.throughSequence } };
@@ -478,6 +479,9 @@ async function prepareUpdate(dataDir, sessionId, runtime) {
     }
     if (run.exhausted) {
       return { result: { outcome: 'exhausted', runId: run.runId, errorId: run.exhaustionErrorId, reason: 'Content attempts are suspended until later journal evidence arrives or the user explicitly requests update retry.' } };
+    }
+    if (run.awaitingEvidence) {
+      return { result: { outcome: 'awaiting_evidence', runId: run.runId, reason: 'The reviewed batch requires later durable evidence before it can advance.' } };
     }
     if (run.phase === 'reviewed' && run.approvedReview?.decision === 'approve' && run.stagedPlan) {
       return { result: { outcome: 'resume_apply', sessionId, runId: run.runId, reason: 'Store the already approved consolidated plan with update apply; no new review is required.' } };
@@ -807,6 +811,12 @@ async function applyUpdate(dataDir, sessionId, flags, runtime) {
     if (review.decision === 'reject') {
       resetStagedUpdate(state, state.activeUpdate.runId);
       state.activeUpdate.previousAttemptErrors = [review.reason];
+      if (review.journalCoverage.some(entry => entry.disposition === 'missing')) {
+        state.activeUpdate.awaitingEvidence = true;
+        state.activeUpdate.awaitingEvidenceAt = new Date().toISOString();
+        await writeState(dataDir, state);
+        return { applied: false, awaitingEvidence: true, errors: [review.reason] };
+      }
       const exhausted = await exhaustIfNeeded(dataDir, state, config, 'semantic-review', review.reason);
       await writeState(dataDir, state);
       return { applied: false, exhausted, errors: [review.reason] };

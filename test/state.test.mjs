@@ -18,6 +18,7 @@ import {
   pendingJournal,
   pruneStaleStates,
   readState,
+  recoverEvidencePausedUpdate,
   recoverExhaustedUpdate,
   recordPreparedUpdate,
   recordReviewedUpdate,
@@ -399,6 +400,22 @@ test('an update engine revision automatically retries an older exhausted run onc
   });
   recovered.exhausted = true;
   assert.equal(recoverExhaustedUpdate(state), null);
+});
+
+test('a review paused for evidence resumes only when later journal evidence exists', () => {
+  const state = newStateForTest();
+  appendJournal(state, { kind: 'user', turnId: 't1', text: 'Requirement' });
+  const paused = beginUpdate(state, 'run-awaiting-evidence');
+  paused.awaitingEvidence = true;
+  assert.equal(recoverEvidencePausedUpdate(state), null);
+
+  appendJournal(state, { kind: 'assistant', turnId: 't1', text: 'Verified implementation result' });
+  const recovered = recoverEvidencePausedUpdate(state, 'run-with-evidence');
+  assert.equal(recovered.runId, 'run-with-evidence');
+  assert.deepEqual(recovered.journalSequences, [1, 2]);
+  assert.deepEqual(recovered.recoveredEvidencePause, {
+    runId: 'run-awaiting-evidence', throughSequence: 1
+  });
 });
 
 test('verified evidence and status intent revisions survive transaction interruption boundaries', () => {

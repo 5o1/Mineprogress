@@ -26,6 +26,10 @@ Notable user-visible changes are documented here. Entries follow
   feed static validation errors into the next bounded attempt instead of repeating a bad candidate.
 - Retry an exhausted transaction once after an internal update-engine revision, allowing an
   installed engine fix to recover old state without requiring another user message.
+- Pause a reviewed batch that is waiting for durable result evidence, then resume it automatically
+  when later journal evidence arrives instead of repeatedly reviewing unchanged input.
+- Re-exec Codex plugin entrypoints with Node's standard environment-proxy support when `HTTP_PROXY`
+  or `HTTPS_PROXY` is configured, covering hooks, background reads, and transaction submission.
 
 ## [0.6.0] - 2026-08-30
 

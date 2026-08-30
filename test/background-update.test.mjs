@@ -144,6 +144,38 @@ test('background generation receives static validation feedback on its next boun
   assert.match(prompts[1], /summary must use the item content language en/iu);
 });
 
+test('background worker pauses without retrying when review identifies missing evidence', async t => {
+  const dataDir = await fs.mkdtemp(path.join(os.tmpdir(), 'mineprogress-background-evidence-pause-'));
+  t.after(() => fs.rm(dataDir, { recursive: true, force: true }));
+  let modelCalls = 0;
+  const result = await runBackgroundUpdate(dataDir, 'session-evidence-pause', {
+    runCommand: async argv => {
+      if (argv[1] === 'prepare') return {
+        outcome: 'generate_and_review', prompt: 'Update contract', previousAttemptErrors: [],
+        existingPlan: { updates: [] }, availableStatuses: ['Todo'], statusRules: null,
+        boundItems: [{ itemId: 'PVTI_1', contentLanguage: 'en' }], referenceLinks: [],
+        context: [{ sequence: 1, kind: 'user', text: 'Implement the parser.' }],
+        useThreadHistory: false, promptNames: ['update'], planningDate: '2026-08-30',
+        model: { model: 'gpt-5.6-luna', reasoningEffort: 'medium' },
+        reviewModel: { model: 'gpt-5.6-luna', reasoningEffort: 'medium' }
+      };
+      if (argv[1] === 'stage') return { accepted: true, plan: { updates: [] }, staticReport: { valid: true, errors: [] } };
+      if (argv[1] === 'apply') return { applied: false, awaitingEvidence: true, errors: ['Implementation evidence is missing.'] };
+      throw new Error(`Unexpected command: ${argv.join(' ')}`);
+    },
+    invokeModel: async input => {
+      modelCalls++;
+      if ('updates' in input.schema.properties) return { updates: [] };
+      return {
+        decision: 'reject', reason: 'The requirement has no implementation evidence yet.',
+        journalCoverage: [{ sequence: 1, disposition: 'missing', itemIds: [], reason: 'No verified result supports an update.' }]
+      };
+    }
+  });
+  assert.equal(result.outcome, 'awaiting_evidence');
+  assert.equal(modelCalls, 2);
+});
+
 test('background worker reviews every journal entry before accepting an unchanged pending plan', async t => {
   const dataDir = await fs.mkdtemp(path.join(os.tmpdir(), 'mineprogress-background-noop-'));
   t.after(() => fs.rm(dataDir, { recursive: true, force: true }));

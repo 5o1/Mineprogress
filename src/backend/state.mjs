@@ -296,6 +296,20 @@ export function recoverExhaustedUpdate(state, runId = crypto.randomUUID()) {
   return recovered;
 }
 
+export function recoverEvidencePausedUpdate(state, runId = crypto.randomUUID()) {
+  const paused = state.activeUpdate;
+  if (!paused?.awaitingEvidence) return null;
+  const laterEvidence = pendingJournal(state).some(event => event.sequence > paused.toSequence);
+  if (!laterEvidence) return null;
+  state.activeUpdate = null;
+  const recovered = beginUpdate(state, runId);
+  recovered.recoveredEvidencePause = {
+    runId: paused.runId,
+    throughSequence: paused.toSequence
+  };
+  return recovered;
+}
+
 function activeRun(state, runId) {
   if (!state.activeUpdate || state.activeUpdate.runId !== runId) {
     throw Object.assign(new Error('The update run is not active'), { code: 'UPDATE_RUN_MISMATCH' });

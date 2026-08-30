@@ -12,12 +12,67 @@ import {
   bindItem,
   openSession,
   readState,
+  recordPreparedUpdate,
   recordReviewedUpdate,
   recordStatusIntent,
+  recordStagedUpdate,
   writeState
 } from '../scripts/lib/state.mjs';
 import { logError, unresolvedErrors } from '../scripts/lib/errors.mjs';
 import { storedStatusRules } from '../src/backend/status-rules.mjs';
+
+test('semantic review pauses a fixed batch when durable evidence is still missing', async t => {
+  const dataDir = await fs.mkdtemp(path.join(os.tmpdir(), 'mineprogress-evidence-pause-'));
+  t.after(() => fs.rm(dataDir, { recursive: true, force: true }));
+  const config = createConfig({
+    owner: 'octocat', ownerType: 'user', projectNumber: 1,
+    kanban: { defaultStatus: 'Todo', terminalStatuses: ['Done'] }
+  });
+  await saveConfig(path.join(dataDir, 'config.json'), config);
+  const { state } = await openSession(dataDir, 'session-evidence-pause');
+  bindItem(state, { itemId: 'PVTI_1', title: 'Parser', contentType: 'issue' });
+  const event = appendJournal(state, { kind: 'user', turnId: 'turn-1', text: 'Implement the parser.' });
+  const update = beginUpdate(state, 'run-evidence-pause');
+  recordPreparedUpdate(state, update.runId, { projectSnapshot: {
+    id: 'PVT_1', fields: [], availableStatuses: ['Todo', 'Done'],
+    statusRules: storedStatusRules({
+      statuses: ['Todo', 'Done'].map(name => ({
+        name, enterWhen: `Enter ${name} when its boundary is satisfied.`,
+        doNotEnterWhen: `Do not enter ${name} when its boundary is unsatisfied.`
+      })),
+      transitions: [{
+        from: 'Todo', to: 'Done', when: 'Implementation and verification are complete.',
+        doNotApplyWhen: 'Implementation or verification remains.'
+      }]
+    }, ['Todo', 'Done']),
+    normalizedItems: [{ itemId: 'PVTI_1', title: 'Parser', status: 'Todo', contentType: 'issue' }]
+  } });
+  recordStagedUpdate(state, update.runId, {
+    plan: { updates: [] }, staticReport: { valid: true, errors: [] }
+  });
+  await writeState(dataDir, state);
+  const reviewFile = path.join(dataDir, 'review-missing.json');
+  await fs.writeFile(reviewFile, JSON.stringify({
+    decision: 'reject', reason: 'The implementation requirement has no durable result evidence yet.',
+    journalCoverage: [{
+      sequence: event.sequence, disposition: 'missing', itemIds: [],
+      reason: 'No verified implementation or test result supports a progress update.'
+    }]
+  }));
+
+  const result = await run([
+    'update', 'apply', '--review', reviewFile,
+    '--session', 'session-evidence-pause', '--data-dir', dataDir
+  ]);
+  assert.equal(result.awaitingEvidence, true);
+  const paused = await readState(dataDir, 'session-evidence-pause');
+  assert.equal(paused.activeUpdate.phase, 'prepared');
+  assert.equal(paused.activeUpdate.awaitingEvidence, true);
+  assert.equal(paused.activeUpdate.attempt, 0);
+  assert.equal((await run([
+    'update', 'prepare', '--session', 'session-evidence-pause', '--data-dir', dataDir
+  ])).outcome, 'awaiting_evidence');
+});
 
 test('prepare automatically recovers an exhausted batch after later journal evidence', async t => {
   const dataDir = await fs.mkdtemp(path.join(os.tmpdir(), 'mineprogress-auto-recovery-'));
