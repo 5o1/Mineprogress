@@ -4,6 +4,7 @@ import path from 'node:path';
 import process from 'node:process';
 
 const STATE_VERSION = 1;
+const PLAN_FORMAT_VERSION = 2;
 
 export function requireDataDir(env = process.env) {
   const dataDir = env.PLUGIN_DATA || env.MINEPROGRESS_DATA;
@@ -22,6 +23,7 @@ export function statePath(dataDir, sessionId) {
 export function newState(sessionId, now = new Date().toISOString()) {
   return {
     version: STATE_VERSION,
+    planFormatVersion: PLAN_FORMAT_VERSION,
     sessionId,
     createdAt: now,
     updatedAt: now,
@@ -42,6 +44,7 @@ export function newState(sessionId, now = new Date().toISOString()) {
 }
 
 function normalizeState(state) {
+  const previousPlanFormat = state.planFormatVersion || 1;
   for (const item of state.boundItems || []) {
     item.bindingSource ||= 'bind';
     item.backfillRevision ??= 1;
@@ -53,6 +56,16 @@ function normalizeState(state) {
     state.fullContextRequestedRevision = state.boundItems.length ? 1 : 0;
   }
   state.fullContextPlannedRevision ??= 0;
+  if (previousPlanFormat < PLAN_FORMAT_VERSION) {
+    if (!state.pendingPlan?.attempts?.length) state.pendingPlan = null;
+    state.activeUpdate = null;
+    if (state.boundItems.length) {
+      const revision = (state.fullContextRequestedRevision || 0) + 1;
+      for (const item of state.boundItems) item.backfillRevision = revision;
+      state.fullContextRequestedRevision = revision;
+    }
+    state.planFormatVersion = PLAN_FORMAT_VERSION;
+  }
   if (state.activeUpdate && state.fullContextRequestedRevision > state.fullContextPlannedRevision &&
       state.activeUpdate.fullContextRevision === undefined) {
     state.activeUpdate.useThreadHistory = true;

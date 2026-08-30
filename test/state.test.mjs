@@ -39,6 +39,20 @@ test('thread state is isolated by hashed session id and restored', async t => {
   assert.equal(second.restored, true);
 });
 
+test('legacy unsubmitted plans are discarded and scheduled for structured backfill', async t => {
+  const dataDir = await temporaryData(t);
+  const { state } = await openSession(dataDir, 'legacy');
+  bindItem(state, { itemId: 'PVTI_1', title: 'Legacy item' });
+  state.planFormatVersion = 1;
+  state.pendingPlan = { plan: { updates: [{ itemId: 'PVTI_1', summary: 'Old summary.' }] }, attempts: [] };
+  await writeState(dataDir, state);
+  const migrated = await readState(dataDir, 'legacy');
+  assert.equal(migrated.planFormatVersion, 2);
+  assert.equal(migrated.pendingPlan, null);
+  assert.ok(migrated.fullContextRequestedRevision > migrated.fullContextPlannedRevision);
+  assert.equal(migrated.boundItems[0].backfillRevision, migrated.fullContextRequestedRevision);
+});
+
 test('planning and submission advance separate incremental checkpoints', async t => {
   const dataDir = await temporaryData(t);
   const { state } = await openSession(dataDir, 's1');

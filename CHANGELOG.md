@@ -18,3 +18,4 @@ Notable user-visible changes are documented here. Entries follow
 - Deferred Project submissions remain queued until GitHub read-back confirms every field update.
 - Stop persists the turn locally and delegates model work to a non-blocking asynchronous Hook.
 - Project summaries remain concise while detailed progress is maintained in the item's body.
+- Unsubmitted legacy summary plans are replaced by a full structured-history backfill after upgrade.
