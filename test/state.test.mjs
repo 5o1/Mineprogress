@@ -37,6 +37,7 @@ test('thread state is isolated by hashed session id and restored', async t => {
   assert.doesNotMatch(statePath(dataDir, 'session/one'), /session[\\/]one/);
   const second = await openSession(dataDir, 'session/one');
   assert.equal(second.restored, true);
+  assert.match(second.state.dailySubmissionDate, /^\d{4}-\d{2}-\d{2}$/u);
 });
 
 test('legacy unsubmitted plans are discarded and scheduled for structured backfill', async t => {

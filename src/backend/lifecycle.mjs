@@ -1,5 +1,6 @@
 import fs from 'node:fs/promises';
 import { assertHostEvent } from '../host/contract.mjs';
+import { calendarDate } from './calendar.mjs';
 import { configPath } from './config.mjs';
 import { reconcilePendingUpdate, submitPendingUpdate } from './application.mjs';
 import { withSessionLock } from './lock.mjs';
@@ -45,12 +46,18 @@ export async function handleUserPrompt(event, runtime) {
   const action = event.commandAction;
   const initialized = await isInitialized(runtime);
   const existing = await readState(runtime.dataDir, event.sessionId);
-  if (!control && (!initialized || !existing?.boundItems.length)) return {};
+  if (!control && (!initialized || (!existing?.boundItems.length && !existing?.pendingPlan))) return {};
   if (control && action === 'init') {
     return { command: action, initializationRequested: true };
   }
+  const currentDate = calendarDate(typeof runtime.now === 'function' ? runtime.now() : new Date());
+  let dailySubmission = null;
+  if (initialized && existing?.pendingPlan && existing.dailySubmissionDate !== currentDate) {
+    dailySubmission = await submitPendingUpdate(runtime.dataDir, event.sessionId, { verify: true }, runtime);
+  }
   await withSessionLock(runtime.dataDir, event.sessionId, async () => {
     const { state } = await openSession(runtime.dataDir, event.sessionId);
+    if (dailySubmission?.verified) state.dailySubmissionDate = currentDate;
     if (control) {
       markControlTurn(state, event.turnId);
       authorizeCommand(state, action, event.turnId);
@@ -58,7 +65,10 @@ export async function handleUserPrompt(event, runtime) {
     appendJournal(state, { kind: 'user', turnId: event.turnId, text: event.prompt, control });
     await writeState(runtime.dataDir, state);
   });
-  return control ? { command: action, commandAuthorized: true } : {};
+  return {
+    ...(control ? { command: action, commandAuthorized: true } : {}),
+    ...(dailySubmission ? { dailySubmission } : {})
+  };
 }
 
 export async function handleTurnStop(event, runtime) {

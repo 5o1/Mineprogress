@@ -113,6 +113,7 @@ const requiredFiles = [
   'scripts/lib/auth.mjs',
   'scripts/lib/state.mjs',
   'src/backend/application.mjs',
+  'src/backend/calendar.mjs',
   'src/backend/index.mjs',
   'src/backend/lifecycle.mjs',
   'src/backend/language.mjs',

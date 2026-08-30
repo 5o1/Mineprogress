@@ -18,6 +18,7 @@ export {
   normalizeContentLanguage,
   validateContentLanguage
 } from './language.mjs';
+export { calendarDate } from './calendar.mjs';
 export { extractReferenceLinks, mergeReferenceLinks, normalizeReferenceLink } from './references.mjs';
 export {
   canManageRepositoryReference,

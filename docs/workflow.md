@@ -22,7 +22,9 @@ Codex exposes one explicit Skill per operation: `$mineprogress:init`, `$mineprog
 item immediately. `check` returns `suggestedAdd` and `suggestedRemove` but never changes the candidate
 list. Mutating commands consume a short-lived authorization recorded by UserPromptSubmit, so the CLI
 cannot create or change bindings on an unrelated turn. Control commands are excluded from later
-update content.
+update content. Before recording the first prompt on a later local calendar date,
+UserPromptSubmit submits and verifies any reviewed pending plan. A confirmed daily submission is
+recorded once for that date; failures keep the queue and date checkpoint unchanged.
 
 Every binding stores its own content-language tag. Create and bind default it to English; only an
 explicit `--language <tag>` changes that item. The backend also extracts external links from each

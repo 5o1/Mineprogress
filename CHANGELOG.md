@@ -32,6 +32,8 @@ Notable user-visible changes are documented here. Entries follow
   pull-request, artifact, and source links are not silently omitted from relevant records.
 - Stored the active workspace repository as item metadata and synchronized its link and description
   through a guarded, script-owned Issue proposal section instead of an appended progress comment.
+- Submitted and verified a reviewed pending plan before recording the first user prompt on a later
+  local calendar date, without repeating the automatic submission again that day.
 
 ## [0.5.0] - 2026-08-30
 

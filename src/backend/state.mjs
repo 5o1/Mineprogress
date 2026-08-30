@@ -2,6 +2,7 @@ import crypto from 'node:crypto';
 import fs from 'node:fs/promises';
 import path from 'node:path';
 import { atomicWriteFile } from './atomic-file.mjs';
+import { calendarDate } from './calendar.mjs';
 import { normalizeContentLanguage } from './language.mjs';
 import { normalizePrimaryRepository } from './repository-reference.mjs';
 
@@ -22,6 +23,7 @@ export function newState(sessionId, now = new Date().toISOString()) {
     createdAt: now,
     updatedAt: now,
     lastEndedAt: null,
+    dailySubmissionDate: calendarDate(now),
     boundItems: [],
     journal: [],
     controlTurnIds: [],
@@ -51,6 +53,7 @@ function normalizeState(state) {
     item.primaryRepository = normalizePrimaryRepository(item.primaryRepository, item.title);
   }
   state.lastPlannedUpdate ??= state.lastSuccessfulUpdate || null;
+  state.dailySubmissionDate ??= calendarDate(state.updatedAt || state.createdAt);
   state.pendingPlan ??= null;
   state.backgroundRequestedThrough ??= null;
   if (state.fullContextRequestedRevision === undefined) {
