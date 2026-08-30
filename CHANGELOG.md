@@ -20,6 +20,8 @@ Notable user-visible changes are documented here. Entries follow
 - Removed prompt-time keyword matching for completion intent. Natural-language status meaning now
   remains journal evidence until the background generator makes a structured decision, review
   approves it, and static transition checks pass.
+- Automatically recover an exhausted content batch when later journal evidence arrives, while
+  retaining the five-attempt limit for unchanged evidence and marking the superseded error handled.
 
 ## [0.6.0] - 2026-08-30
 

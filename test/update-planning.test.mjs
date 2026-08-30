@@ -8,6 +8,7 @@ import { createConfig, saveConfig } from '../scripts/lib/config.mjs';
 import { updateProjectMetadata } from '../scripts/lib/metadata.mjs';
 import {
   appendJournal,
+  beginUpdate,
   bindItem,
   openSession,
   readState,
@@ -15,7 +16,84 @@ import {
   recordStatusIntent,
   writeState
 } from '../scripts/lib/state.mjs';
+import { logError, unresolvedErrors } from '../scripts/lib/errors.mjs';
 import { storedStatusRules } from '../src/backend/status-rules.mjs';
+
+test('prepare automatically recovers an exhausted batch after later journal evidence', async t => {
+  const dataDir = await fs.mkdtemp(path.join(os.tmpdir(), 'mineprogress-auto-recovery-'));
+  t.after(() => fs.rm(dataDir, { recursive: true, force: true }));
+  const config = createConfig({
+    owner: 'octocat', ownerType: 'user', projectNumber: 1,
+    kanban: { defaultStatus: 'Todo', terminalStatuses: ['Done'] }
+  });
+  await saveConfig(path.join(dataDir, 'config.json'), config);
+  const availableStatuses = ['Todo', 'Done'];
+  await updateProjectMetadata(dataDir, config, {
+    availableStatuses,
+    statusRules: storedStatusRules({
+      statuses: availableStatuses.map(name => ({
+        name,
+        enterWhen: `Enter ${name} when its durable boundary is satisfied.`,
+        doNotEnterWhen: `Do not enter ${name} while its durable boundary is unsatisfied.`
+      })),
+      transitions: [{
+        from: 'Todo', to: 'Done',
+        when: 'Required implementation and verification are complete.',
+        doNotApplyWhen: 'Required implementation or verification remains.'
+      }]
+    }, availableStatuses)
+  });
+  const { state } = await openSession(dataDir, 'session-auto-recovery');
+  bindItem(state, { itemId: 'PVTI_1', title: 'Parser' });
+  appendJournal(state, { kind: 'user', turnId: 'turn-1', text: 'Earlier evidence.' });
+  const exhausted = beginUpdate(state, 'run-exhausted');
+  exhausted.exhausted = true;
+  const error = await logError(dataDir, {
+    sessionId: state.sessionId,
+    updateRunId: exhausted.runId,
+    stage: 'static-validation',
+    errorCode: 'REVIEW_EXHAUSTED',
+    message: 'The first bounded run was exhausted.'
+  });
+  exhausted.exhaustionErrorId = error.errorId;
+  appendJournal(state, { kind: 'user', turnId: 'turn-2', text: 'Later completion evidence.' });
+  await writeState(dataDir, state);
+
+  const previousToken = process.env.GITHUB_TOKEN;
+  const previousDisableGh = process.env.MINEPROGRESS_DISABLE_GH_AUTH;
+  const previousFetch = globalThis.fetch;
+  process.env.GITHUB_TOKEN = 'test-token';
+  process.env.MINEPROGRESS_DISABLE_GH_AUTH = '1';
+  globalThis.fetch = async () => ({
+    ok: true,
+    status: 200,
+    json: async () => ({ data: { user: { projectV2: {
+      id: 'PVT_1', title: 'Tasks', public: false,
+      repositories: { totalCount: 0, nodes: [] },
+      fields: { nodes: [{ id: 'STATUS', name: 'Status', options: [
+        { id: 'TODO', name: 'Todo' }, { id: 'DONE', name: 'Done' }
+      ] }] },
+      items: { pageInfo: { hasNextPage: false, endCursor: null }, nodes: [{
+        id: 'PVTI_1', isArchived: false, content: { title: 'Parser' },
+        fieldValues: { nodes: [{ name: 'Todo', optionId: 'TODO', field: { id: 'STATUS', name: 'Status' } }] }
+      }] }
+    } } } })
+  });
+  t.after(() => {
+    globalThis.fetch = previousFetch;
+    if (previousToken === undefined) delete process.env.GITHUB_TOKEN; else process.env.GITHUB_TOKEN = previousToken;
+    if (previousDisableGh === undefined) delete process.env.MINEPROGRESS_DISABLE_GH_AUTH; else process.env.MINEPROGRESS_DISABLE_GH_AUTH = previousDisableGh;
+  });
+
+  const prepared = await run(['update', 'prepare', '--session', 'session-auto-recovery', '--data-dir', dataDir]);
+  assert.equal(prepared.outcome, 'generate_and_review');
+  assert.deepEqual(prepared.context.map(event => event.sequence), [1, 2]);
+  const recovered = await readState(dataDir, 'session-auto-recovery');
+  assert.notEqual(recovered.activeUpdate.runId, 'run-exhausted');
+  assert.equal(recovered.activeUpdate.recoveredExhaustion.errorId, error.errorId);
+  assert.ok(recovered.activeUpdate.recoveredExhaustion.resolvedAt);
+  assert.deepEqual(await unresolvedErrors(dataDir, { sessionId: state.sessionId }), []);
+});
 
 test('reviewed incremental plan is stored before one later GitHub submission', async t => {
   const dataDir = await fs.mkdtemp(path.join(os.tmpdir(), 'mineprogress-planning-'));

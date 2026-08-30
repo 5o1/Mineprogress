@@ -23,13 +23,11 @@ source evidence, including messages from before installation. Give the reviewer 
 4. Save the response temporarily and run `update apply --review <file>`. Regenerate after rejection.
    For a manual invocation, finish with `update submit`.
 
-Allow five generated plans. Stop on `exhausted`; only explicit `$mineprogress:update retry` restarts
-that journal. Infrastructure errors consume no content retry; record model, subagent, or denied-
-elevation failures with `record-error` and stop.
+Allow five generated plans. Stop on `exhausted`; later journal evidence automatically starts a new
+bounded run containing both the exhausted batch and the later evidence. With no later evidence,
+explicit `$mineprogress:update retry` remains available. Infrastructure errors consume no content
+retry; record model, subagent, or denied-elevation failures with `record-error` and stop.
 
-Automatic Stop revisions run in the plugin's asynchronous background worker, not in the foreground
-agent using this Skill. Do not duplicate that work when a manual command was not requested.
-Runtime prompt files are loaded only into those isolated generator/reviewer processes, not this
-thread's global instructions. Script validation and operation construction, not model compliance,
-enforce locked Issue bodies and append-only Draft bodies. `preferFastMode` is a session preference,
-not a per-subagent option.
+Automatic Stop revisions run asynchronously. Do not duplicate them without a manual request.
+Runtime prompts load only in isolated generator/reviewer processes. Scripts, not model compliance,
+enforce locked Issue bodies and append-only Draft bodies. `preferFastMode` is a session preference.

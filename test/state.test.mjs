@@ -18,6 +18,7 @@ import {
   pendingJournal,
   pruneStaleStates,
   readState,
+  recoverExhaustedUpdate,
   recordPreparedUpdate,
   recordReviewedUpdate,
   recordStatusIntent,
@@ -357,12 +358,26 @@ test('bindings retain linked content metadata for explicit synchronized deletion
   });
 });
 
-test('exhausted updates require an explicit retry', () => {
+test('exhausted updates recover automatically only after later journal evidence', () => {
   const state = newStateForTest();
   appendJournal(state, { kind: 'user', turnId: 't1', text: 'Change' });
-  beginUpdate(state, 'run-1').exhausted = true;
+  const exhausted = beginUpdate(state, 'run-1');
+  exhausted.exhausted = true;
+  exhausted.exhaustionErrorId = 'error-1';
+  assert.equal(recoverExhaustedUpdate(state), null);
+
+  appendJournal(state, { kind: 'user', turnId: 't2', text: 'Later evidence' });
+  const recovered = recoverExhaustedUpdate(state, 'run-2');
+  assert.equal(recovered.runId, 'run-2');
+  assert.deepEqual(recovered.journalSequences, [1, 2]);
+  assert.deepEqual(recovered.recoveredExhaustion, {
+    runId: 'run-1', errorId: 'error-1', throughSequence: 1, resolvedAt: null
+  });
+  assert.equal(recovered.attempt, 0);
+
+  recovered.exhausted = true;
   const retried = retryExhaustedUpdate(state);
-  assert.notEqual(retried.runId, 'run-1');
+  assert.notEqual(retried.runId, 'run-2');
   assert.equal(retried.fromSequence, 0);
 });
 

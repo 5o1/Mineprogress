@@ -67,6 +67,11 @@ the normal review path; it can advance only when every new event is explicitly f
 New journal events arriving during a run remain outside its fixed batch and are processed by the
 next pass.
 
+Five failed content rounds exhaust only that fixed batch. If later journal evidence arrives, the
+worker automatically opens a fresh bounded run over the exhausted events and the new evidence,
+then marks the superseded error handled. Without new evidence it remains dormant instead of looping;
+manual `update retry` is an optional override rather than a recovery requirement.
+
 UserPromptSubmit never classifies natural-language status intent. The background generator evaluates
 the journal semantically from the verified per-item evidence ledger, pending reviewed evidence,
 current Project fields, and generated status rules. A proposed status transition becomes a durable

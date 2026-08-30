@@ -47,6 +47,7 @@ import {
   mergeEvidenceFacts,
   pendingPlanIsCurrent,
   readState,
+  recoverExhaustedUpdate,
   recordPreparedUpdate,
   recordReviewedUpdate,
   recordStatusIntent,
@@ -468,7 +469,7 @@ async function prepareUpdate(dataDir, sessionId, runtime) {
     if (state.pendingPlan?.attempts?.length) {
       return { result: { outcome: 'submission_unverified', reason: 'Verify the earlier submission with update submit before revising the plan.' } };
     }
-    const run = beginUpdate(state);
+    const run = recoverExhaustedUpdate(state) || beginUpdate(state);
     if (!run) {
       if (state.pendingPlan) {
         return { result: { outcome: 'pending_submission', updates: state.pendingPlan.plan.updates.length, throughSequence: state.pendingPlan.throughSequence } };
@@ -476,7 +477,7 @@ async function prepareUpdate(dataDir, sessionId, runtime) {
       return { result: { outcome: 'noop', reason: 'No context exists after the last planned update.' } };
     }
     if (run.exhausted) {
-      return { result: { outcome: 'exhausted', runId: run.runId, errorId: run.exhaustionErrorId, reason: 'Content attempts are suspended. Use update retry only after the user explicitly requests another run.' } };
+      return { result: { outcome: 'exhausted', runId: run.runId, errorId: run.exhaustionErrorId, reason: 'Content attempts are suspended until later journal evidence arrives or the user explicitly requests update retry.' } };
     }
     if (run.phase === 'reviewed' && run.approvedReview?.decision === 'approve' && run.stagedPlan) {
       return { result: { outcome: 'resume_apply', sessionId, runId: run.runId, reason: 'Store the already approved consolidated plan with update apply; no new review is required.' } };
@@ -486,9 +487,29 @@ async function prepareUpdate(dataDir, sessionId, runtime) {
       return { result: { outcome: 'paused_no_bindings', reason: 'No items are bound; the journal batch remains unprocessed.' } };
     }
     await writeState(dataDir, state);
-    return { runId: run.runId };
+    return {
+      runId: run.runId,
+      recoveryErrorId: run.recoveredExhaustion?.resolvedAt
+        ? null
+        : run.recoveredExhaustion?.errorId || null
+    };
   });
   if (setup.result) return setup.result;
+  if (setup.recoveryErrorId) {
+    await resolveError(
+      dataDir,
+      setup.recoveryErrorId,
+      `Automatically resumed exhausted update ${setup.runId} after later journal evidence arrived.`
+    );
+    await withSessionLock(dataDir, sessionId, async () => {
+      const latest = await readState(dataDir, sessionId);
+      if (latest?.activeUpdate?.runId === setup.runId &&
+          latest.activeUpdate.recoveredExhaustion?.errorId === setup.recoveryErrorId) {
+        latest.activeUpdate.recoveredExhaustion.resolvedAt = new Date().toISOString();
+        await writeState(dataDir, latest);
+      }
+    });
+  }
   const config = await pluginConfig(dataDir, runtime);
   let state = await withSessionLock(dataDir, sessionId, async () => {
     const latest = await readState(dataDir, sessionId);
