@@ -4,6 +4,7 @@ import fs from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import {
+  UPDATE_ENGINE_REVISION,
   appendJournal,
   authorizeCommand,
   beginUpdate,
@@ -20,6 +21,7 @@ import {
   readState,
   recoverEvidencePausedUpdate,
   recoverExhaustedUpdate,
+  releaseVerifiedTerminalBindings,
   recordPreparedUpdate,
   recordReviewedUpdate,
   recordStatusIntent,
@@ -393,7 +395,7 @@ test('an update engine revision automatically retries an older exhausted run onc
 
   const recovered = recoverExhaustedUpdate(state, 'run-current-engine');
   assert.equal(recovered.runId, 'run-current-engine');
-  assert.equal(recovered.engineRevision, 3);
+  assert.equal(recovered.engineRevision, UPDATE_ENGINE_REVISION);
   assert.deepEqual(recovered.recoveredExhaustion, {
     runId: 'run-old-engine', errorId: 'error-old-engine', throughSequence: 1,
     reason: 'engine-upgrade', resolvedAt: null
@@ -439,7 +441,9 @@ test('verified evidence and status intent revisions survive transaction interrup
     projectId: 'PVT_1',
     operations: [{ key: 'status-done', itemId: 'PVTI_1', kind: 'status' }]
   }, review, {
-    satisfiedStatusIntents: [{ itemId: 'PVTI_1', targetStatus: 'Done', revision: 1 }]
+    satisfiedStatusIntents: [{
+      itemId: 'PVTI_1', targetStatus: 'Done', revision: 1, unbindOnVerification: true
+    }]
   });
   assert.equal(state.journal.length, 0);
   assert.equal(state.pendingPlan.evidenceFacts.length, 1);
@@ -454,6 +458,104 @@ test('verified evidence and status intent revisions survive transaction interrup
   assert.equal(state.boundItems[0].evidenceLedger.facts.length, 1);
   assert.equal(state.boundItems[0].statusIntent.targetStatus, 'Review');
   assert.equal(state.boundItems[0].statusIntentRevision, 2);
+});
+
+test('verified terminal release preserves unsettled and concurrently changed bindings', () => {
+  const state = newStateForTest();
+  bindItem(state, { itemId: 'PVTI_DONE', title: 'Done issue', contentType: 'issue' });
+  bindItem(state, { itemId: 'PVTI_OPEN', title: 'Open issue', contentType: 'issue' });
+  bindItem(state, { itemId: 'PVTI_ACTIVE', title: 'Reopened task', contentType: 'issue' });
+  state.fullContextPlannedRevision = state.fullContextRequestedRevision;
+  appendJournal(state, { kind: 'user', turnId: 'turn-1', text: 'Keep active context.' });
+  recordStatusIntent(state, 'PVTI_ACTIVE', 'Review', 1, { role: 'review' });
+
+  const released = releaseVerifiedTerminalBindings(state, [
+    { itemId: 'PVTI_DONE', status: 'Done', contentType: 'issue', contentState: 'CLOSED' },
+    { itemId: 'PVTI_OPEN', status: 'Done', contentType: 'issue', contentState: 'OPEN' },
+    { itemId: 'PVTI_ACTIVE', status: 'Done', contentType: 'issue', contentState: 'CLOSED' }
+  ], ['Done']);
+
+  assert.deepEqual(released, ['PVTI_DONE']);
+  assert.deepEqual(state.boundItems.map(item => item.itemId), ['PVTI_OPEN', 'PVTI_ACTIVE']);
+  assert.equal(state.journal.length, 1);
+});
+
+test('a newly bound terminal item remains bound until full-history backfill is planned', () => {
+  const state = newStateForTest();
+  bindItem(state, { itemId: 'PVTI_DONE', title: 'Historical task', contentType: 'issue' });
+  const projectItems = [{
+    itemId: 'PVTI_DONE', status: 'Done', contentType: 'issue', contentState: 'CLOSED'
+  }];
+
+  assert.deepEqual(releaseVerifiedTerminalBindings(state, projectItems, ['Done']), []);
+  assert.equal(state.boundItems.length, 1);
+  state.fullContextPlannedRevision = state.fullContextRequestedRevision;
+  assert.deepEqual(releaseVerifiedTerminalBindings(state, projectItems, ['Done']), ['PVTI_DONE']);
+  assert.equal(state.boundItems.length, 0);
+});
+
+test('verified submission releases only the matching completion intent', () => {
+  const state = newStateForTest();
+  bindItem(state, { itemId: 'PVTI_DONE', title: 'Completed task' });
+  bindItem(state, { itemId: 'PVTI_REVIEW', title: 'Review task' });
+  recordStatusIntent(state, 'PVTI_DONE', 'Done', 1, { role: 'completed' });
+  recordStatusIntent(state, 'PVTI_REVIEW', 'Review', 1, { role: 'review' });
+  const run = beginUpdate(state, 'terminal-run');
+  const plan = { updates: [{ itemId: 'PVTI_DONE', status: 'Done' }] };
+  const review = approveRun(state, run, plan, []);
+  storePendingPlan(state, run.runId, plan, {
+    projectId: 'PVT_1',
+    operations: [{ key: 'status-done', itemId: 'PVTI_DONE', kind: 'status' }]
+  }, review, {
+    satisfiedStatusIntents: [{
+      itemId: 'PVTI_DONE', targetStatus: 'Done', revision: 1, unbindOnVerification: true
+    }]
+  });
+
+  completeSubmission(state, { verifiedTerminalItemIds: new Set(['PVTI_DONE']) });
+
+  assert.deepEqual(state.boundItems.map(item => item.itemId), ['PVTI_REVIEW']);
+  assert.equal(state.boundItems[0].statusIntent.targetStatus, 'Review');
+});
+
+test('an operation-free completion waits for a fresh remote reconciliation', () => {
+  const state = newStateForTest();
+  bindItem(state, { itemId: 'PVTI_DONE', title: 'Completed task' });
+  recordStatusIntent(state, 'PVTI_DONE', 'Done', 1, { role: 'completed' });
+  const run = beginUpdate(state, 'terminal-noop-run');
+  const plan = { updates: [{ itemId: 'PVTI_DONE', status: 'Done' }] };
+  const review = approveRun(state, run, plan, []);
+
+  storePendingPlan(state, run.runId, plan, { projectId: 'PVT_1', operations: [] }, review, {
+    satisfiedStatusIntents: [{
+      itemId: 'PVTI_DONE', targetStatus: 'Done', revision: 1, unbindOnVerification: true
+    }]
+  });
+
+  assert.equal(state.boundItems.length, 1);
+  assert.equal(state.boundItems[0].statusIntent.targetStatus, 'Done');
+  assert.equal(state.pendingPlan, null);
+});
+
+test('a confirmed write does not release completion without terminal read-back', () => {
+  const state = newStateForTest();
+  bindItem(state, { itemId: 'PVTI_DONE', title: 'Completed task' });
+  recordStatusIntent(state, 'PVTI_DONE', 'Done', 1, { role: 'completed' });
+  const run = beginUpdate(state, 'terminal-write-run');
+  const plan = { updates: [{ itemId: 'PVTI_DONE', status: 'Done', comment: 'Result.' }] };
+  const review = approveRun(state, run, plan, []);
+  storePendingPlan(state, run.runId, plan, {
+    projectId: 'PVT_1', operations: [{ key: 'comment', itemId: 'PVTI_DONE', kind: 'comment' }]
+  }, review, {
+    satisfiedStatusIntents: [{
+      itemId: 'PVTI_DONE', targetStatus: 'Done', revision: 1, unbindOnVerification: true
+    }]
+  });
+
+  completeSubmission(state);
+
+  assert.equal(state.boundItems.length, 1);
+  assert.equal(state.boundItems[0].statusIntent.targetStatus, 'Done');
 });
 
 test('remote managed evidence is deduplicated in the per-item ledger', () => {

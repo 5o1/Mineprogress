@@ -150,6 +150,72 @@ test('prepare automatically recovers an exhausted batch after later journal evid
   assert.deepEqual(await unresolvedErrors(dataDir, { sessionId: state.sessionId }), []);
 });
 
+test('prepare releases an already verified terminal binding without model work', async t => {
+  const dataDir = await fs.mkdtemp(path.join(os.tmpdir(), 'mineprogress-terminal-release-'));
+  t.after(() => fs.rm(dataDir, { recursive: true, force: true }));
+  const config = createConfig({
+    owner: 'octocat', ownerType: 'user', projectNumber: 1,
+    kanban: { defaultStatus: 'Todo', terminalStatuses: ['Done'] }
+  });
+  await saveConfig(path.join(dataDir, 'config.json'), config);
+  const { state } = await openSession(dataDir, 'session-terminal-release');
+  bindItem(state, { itemId: 'PVTI_1', title: 'Parser' });
+  state.fullContextPlannedRevision = state.fullContextRequestedRevision;
+  state.boundItems[0].evidenceLedger.recoveredAt = '2026-08-30T00:00:00.000Z';
+  await writeState(dataDir, state);
+
+  const previousToken = process.env.GITHUB_TOKEN;
+  const previousDisableGh = process.env.MINEPROGRESS_DISABLE_GH_AUTH;
+  const previousFetch = globalThis.fetch;
+  process.env.GITHUB_TOKEN = 'test-token';
+  process.env.MINEPROGRESS_DISABLE_GH_AUTH = '1';
+  let projectReads = 0;
+  globalThis.fetch = async (_url, request) => {
+    const { query } = JSON.parse(request.body);
+    assert.match(query, /query\(\$login/u);
+    projectReads++;
+    return {
+      ok: true,
+      status: 200,
+      json: async () => ({ data: { user: { projectV2: {
+        id: 'PVT_1', title: 'Tasks', public: false,
+        repositories: { totalCount: 1, nodes: [{ nameWithOwner: 'octocat/todos', visibility: 'PUBLIC' }] },
+        fields: { nodes: [{ id: 'STATUS', name: 'Status', options: [
+          { id: 'TODO', name: 'Todo' }, { id: 'DONE', name: 'Done' }
+        ] }] },
+        items: { pageInfo: { hasNextPage: false, endCursor: null }, nodes: [{
+          id: 'PVTI_1', isArchived: false,
+          content: {
+            __typename: 'Issue', id: 'I_1', title: 'Parser', state: 'CLOSED',
+            url: 'https://github.com/octocat/todos/issues/1', body: '',
+            repository: { nameWithOwner: 'octocat/todos' }
+          },
+          fieldValues: { nodes: [{
+            name: 'Done', optionId: 'DONE', field: { id: 'STATUS', name: 'Status' }
+          }] }
+        }] }
+      } } } })
+    };
+  };
+  t.after(() => {
+    globalThis.fetch = previousFetch;
+    if (previousToken === undefined) delete process.env.GITHUB_TOKEN; else process.env.GITHUB_TOKEN = previousToken;
+    if (previousDisableGh === undefined) delete process.env.MINEPROGRESS_DISABLE_GH_AUTH; else process.env.MINEPROGRESS_DISABLE_GH_AUTH = previousDisableGh;
+  });
+
+  const prepared = await run([
+    'update', 'prepare', '--reconcile-bindings',
+    '--session', 'session-terminal-release', '--data-dir', dataDir
+  ]);
+  assert.equal(prepared.outcome, 'paused_no_bindings');
+  assert.equal(projectReads, 1);
+  const restored = await readState(dataDir, 'session-terminal-release');
+  assert.equal(restored.boundItems.length, 0);
+  assert.equal(restored.activeUpdate, null);
+  assert.equal(restored.journal.length, 0);
+  assert.equal(restored.backgroundRequestedThrough, null);
+});
+
 test('reviewed incremental plan is stored before one later GitHub submission', async t => {
   const dataDir = await fs.mkdtemp(path.join(os.tmpdir(), 'mineprogress-planning-'));
   t.after(() => fs.rm(dataDir, { recursive: true, force: true }));
@@ -272,7 +338,7 @@ test('reviewed incremental plan is stored before one later GitHub submission', a
   assert.equal(pendingState.pendingPlan.plan.updates.length, 1);
   assert.equal(pendingState.boundItems[0].statusIntent.targetStatus, 'Done');
   assert.deepEqual(pendingState.pendingPlan.satisfiedStatusIntents, [{
-    itemId: 'PVTI_1', targetStatus: 'Done', revision: 1
+    itemId: 'PVTI_1', targetStatus: 'Done', revision: 1, unbindOnVerification: true
   }]);
   assert.equal(pendingState.pendingPlan.operations.find(operation => operation.kind === 'status').before, 'Todo');
   await updateProjectMetadata(dataDir, config, { availableStatuses, statusRules: prepared.statusRules });
@@ -318,7 +384,7 @@ test('reviewed incremental plan is stored before one later GitHub submission', a
   assert.equal(submissions, 2);
   const finalState = await readState(dataDir, 'session-1');
   assert.equal(finalState.pendingPlan, null);
-  assert.equal(finalState.boundItems[0].statusIntent, null);
+  assert.equal(finalState.boundItems.length, 0);
   assert.equal(finalState.lastSuccessfulUpdate.sequence, 3);
   assert.equal(projectReads, 4);
 });

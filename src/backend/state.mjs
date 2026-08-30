@@ -12,7 +12,7 @@ const UPDATE_PHASES = new Set(['claimed', 'prepared', 'staged', 'reviewed']);
 const MAX_EVIDENCE_FACTS = 50;
 const MAX_EVIDENCE_TEXT_CHARACTERS = 2000;
 const MAX_PROCESSED_JOURNAL = 200;
-export const UPDATE_ENGINE_REVISION = 3;
+export const UPDATE_ENGINE_REVISION = 4;
 
 export function statePath(dataDir, sessionId) {
   if (!sessionId) throw Object.assign(new Error('sessionId is required'), { code: 'SESSION_ID_REQUIRED' });
@@ -460,6 +460,34 @@ export function recordStatusIntent(state, itemId, targetStatus, sourceSequence, 
   return true;
 }
 
+export function releaseVerifiedTerminalBindings(state, projectItems, terminalStatuses) {
+  if (state.pendingPlan) return [];
+  const terminal = new Set(terminalStatuses || []);
+  const remoteItems = projectItems instanceof Map
+    ? projectItems
+    : new Map((projectItems || []).map(item => [item.itemId, item]));
+  const released = [];
+  state.boundItems = state.boundItems.filter(binding => {
+    const item = remoteItems.get(binding.itemId);
+    const backfillSettled = (binding.backfillRevision || 0) <= (state.fullContextPlannedRevision || 0);
+    const intentCompatible = !binding.statusIntent || (
+      binding.statusIntent.role === 'completed' &&
+      binding.statusIntent.targetStatus === item?.status
+    );
+    const contentSettled = item?.contentType !== 'issue' || item.contentState === 'CLOSED';
+    const shouldRelease = backfillSettled && terminal.has(item?.status) && contentSettled && intentCompatible;
+    if (shouldRelease) released.push(binding.itemId);
+    return !shouldRelease;
+  });
+  if (released.length && !state.boundItems.length) {
+    state.activeUpdate = null;
+    state.journal = [];
+    state.unverifiedEvidenceFacts = [];
+    state.backgroundRequestedThrough = null;
+  }
+  return released;
+}
+
 function planRevisionMap(state, field) {
   return Object.fromEntries(state.boundItems.map(binding => [binding.itemId,
     field === 'evidence' ? binding.evidenceLedger?.revision || 0 : binding.statusIntentRevision || 0]));
@@ -581,7 +609,8 @@ export function storePendingPlan(state, runId, plan, submission, review, {
   const satisfied = satisfiedStatusIntents.map(intent => ({
     itemId: intent.itemId,
     targetStatus: intent.targetStatus,
-    revision: intent.revision
+    revision: intent.revision,
+    unbindOnVerification: Boolean(intent.unbindOnVerification)
   }));
   state.pendingPlan = submission.operations.length ? {
     plan,
@@ -601,7 +630,8 @@ export function storePendingPlan(state, runId, plan, submission, review, {
     for (const fact of evidenceFacts) mergeEvidenceFacts(state, fact.itemId, [fact]);
     for (const intent of satisfied) {
       const binding = state.boundItems.find(item => item.itemId === intent.itemId);
-      if (binding?.statusIntent?.revision === intent.revision && binding.statusIntent.targetStatus === intent.targetStatus) {
+      if (!intent.unbindOnVerification && binding?.statusIntent?.revision === intent.revision &&
+          binding.statusIntent.targetStatus === intent.targetStatus) {
         binding.statusIntent = null;
       }
     }
@@ -631,7 +661,7 @@ export function confirmSubmissionResponse(state, attemptId) {
   return attempt;
 }
 
-export function completeSubmission(state) {
+export function completeSubmission(state, { verifiedTerminalItemIds = new Set() } = {}) {
   if (!state.pendingPlan) return false;
   const proposalItemIds = new Set((state.pendingPlan.operations || [])
     .filter(operation => operation.kind === 'proposalBody')
@@ -640,16 +670,29 @@ export function completeSubmission(state) {
     if (proposalItemIds.has(binding.itemId)) binding.proposalInitialized = true;
   }
   for (const fact of state.pendingPlan.evidenceFacts || []) mergeEvidenceFacts(state, fact.itemId, [fact]);
+  const releaseItemIds = new Set();
   for (const intent of state.pendingPlan.satisfiedStatusIntents || []) {
     const binding = state.boundItems.find(item => item.itemId === intent.itemId);
     if (binding?.statusIntent?.revision === intent.revision && binding.statusIntent.targetStatus === intent.targetStatus) {
-      binding.statusIntent = null;
+      if (intent.unbindOnVerification) {
+        if (verifiedTerminalItemIds.has(intent.itemId)) releaseItemIds.add(intent.itemId);
+      } else {
+        binding.statusIntent = null;
+      }
     }
+  }
+  if (releaseItemIds.size) {
+    state.boundItems = state.boundItems.filter(binding => !releaseItemIds.has(binding.itemId));
   }
   state.lastSuccessfulUpdate = {
     sequence: state.pendingPlan.throughSequence,
     completedAt: new Date().toISOString()
   };
   state.pendingPlan = null;
+  if (releaseItemIds.size && !state.boundItems.length) {
+    state.journal = [];
+    state.unverifiedEvidenceFacts = [];
+    state.backgroundRequestedThrough = null;
+  }
   return true;
 }

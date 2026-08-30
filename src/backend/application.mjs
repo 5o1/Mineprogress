@@ -49,6 +49,7 @@ import {
   readState,
   recoverEvidencePausedUpdate,
   recoverExhaustedUpdate,
+  releaseVerifiedTerminalBindings,
   recordPreparedUpdate,
   recordReviewedUpdate,
   recordStatusIntent,
@@ -109,7 +110,7 @@ export function parseCommandArgs(argv) {
     const value = argv[index];
     if (!value.startsWith('--')) { positional.push(value); continue; }
     const key = value.slice(2);
-    if (['all', 'delete', 'json', 'confirm', 'no-repository'].includes(key)) flags[key] = true;
+    if (['all', 'delete', 'json', 'confirm', 'no-repository', 'reconcile-bindings'].includes(key)) flags[key] = true;
     else flags[key] = argv[++index];
   }
   return { positional, flags };
@@ -464,7 +465,7 @@ async function checkCommand(dataDir, flags, runtime) {
   };
 }
 
-async function prepareUpdate(dataDir, sessionId, runtime) {
+async function prepareUpdate(dataDir, sessionId, runtime, { reconcileBindings = false } = {}) {
   const setup = await withSessionLock(dataDir, sessionId, async () => {
     const { state } = await openSession(dataDir, sessionId);
     if (state.pendingPlan?.attempts?.length) {
@@ -474,6 +475,9 @@ async function prepareUpdate(dataDir, sessionId, runtime) {
     if (!run) {
       if (state.pendingPlan) {
         return { result: { outcome: 'pending_submission', updates: state.pendingPlan.plan.updates.length, throughSequence: state.pendingPlan.throughSequence } };
+      }
+      if (reconcileBindings && state.boundItems.length) {
+        return { verifyTerminalBindings: state.boundItems.map(item => item.itemId) };
       }
       return { result: { outcome: 'noop', reason: 'No context exists after the last planned update.' } };
     }
@@ -499,6 +503,26 @@ async function prepareUpdate(dataDir, sessionId, runtime) {
     };
   });
   if (setup.result) return setup.result;
+  if (setup.verifyTerminalBindings) {
+    const config = await pluginConfig(dataDir, runtime);
+    const project = await readProject(config, await runtime.githubClient());
+    const candidates = new Set(setup.verifyTerminalBindings);
+    const released = await withSessionLock(dataDir, sessionId, async () => {
+      const latest = await readState(dataDir, sessionId);
+      if (!latest || latest.pendingPlan || latest.activeUpdate) return [];
+      const scopedItems = project.normalizedItems.filter(item => candidates.has(item.itemId));
+      const itemIds = releaseVerifiedTerminalBindings(
+        latest,
+        scopedItems,
+        config.kanban.terminalStatuses
+      );
+      if (itemIds.length) await writeState(dataDir, latest);
+      return itemIds;
+    });
+    return released.length
+      ? { outcome: 'paused_no_bindings', reason: 'Verified terminal bindings were released.', released }
+      : { outcome: 'noop', reason: 'No terminal binding is ready for release.' };
+  }
   if (setup.recoveryErrorId) {
     await resolveError(
       dataDir,
@@ -571,6 +595,15 @@ async function prepareUpdate(dataDir, sessionId, runtime) {
       for (const [itemId, facts] of recoveredEvidence) {
         mergeEvidenceFacts(latest, itemId, facts, { recoveredAt });
       }
+      releaseVerifiedTerminalBindings(
+        latest,
+        project.normalizedItems,
+        config.kanban.terminalStatuses
+      );
+      if (!latest.boundItems.length) {
+        await writeState(dataDir, latest);
+        return latest;
+      }
       if (!statusRules) {
         await writeState(dataDir, latest);
         return latest;
@@ -586,6 +619,9 @@ async function prepareUpdate(dataDir, sessionId, runtime) {
       await writeState(dataDir, latest);
       return latest;
     });
+    if (!state?.boundItems.length) {
+      return { outcome: 'paused_no_bindings', reason: 'All terminal bindings were verified and released.' };
+    }
     if (!statusRules) {
       return {
         outcome: 'status_rules_required',
@@ -861,7 +897,8 @@ async function applyUpdate(dataDir, sessionId, flags, runtime) {
       return planned || alreadySatisfied ? [{
         itemId: binding.itemId,
         targetStatus: intent.targetStatus,
-        revision: intent.revision
+        revision: intent.revision,
+        unbindOnVerification: intent.role === 'completed'
       }] : [];
     });
     const pending = storePendingPlan(state, runId, state.activeUpdate.stagedPlan, submission, review, {
@@ -925,10 +962,19 @@ export async function reconcilePendingUpdate(dataDir, sessionId, { retry = true 
   }
   if (!report.retryable.length && !report.conflicts.length) {
     const writeOperations = report.confirmed.length;
+    const projectItems = new Map(project.normalizedItems.map(item => [item.itemId, item]));
+    const verifiedTerminalItemIds = new Set((state.pendingPlan.satisfiedStatusIntents || [])
+      .filter(intent => {
+        if (!intent.unbindOnVerification || !config.kanban.terminalStatuses.includes(intent.targetStatus)) return false;
+        const item = projectItems.get(intent.itemId);
+        return item?.status === intent.targetStatus &&
+          (item.contentType !== 'issue' || item.contentState === 'CLOSED');
+      })
+      .map(intent => intent.itemId));
     await withSessionLock(dataDir, sessionId, async () => {
       const latest = await readState(dataDir, sessionId);
       if (!latest?.pendingPlan) return;
-      completeSubmission(latest);
+      completeSubmission(latest, { verifiedTerminalItemIds });
       await writeState(dataDir, latest);
     });
     return { submitted: true, verified: true, writeOperations, checkpointAdvanced: true };
@@ -985,7 +1031,11 @@ export async function submitPendingUpdate(dataDir, sessionId, { verify = true } 
 async function updateCommand(dataDir, flags, positional, runtime) {
   const sessionId = requiredSession(flags, runtime);
   const action = positional[0] || 'prepare';
-  if (action === 'prepare') return prepareUpdate(dataDir, sessionId, runtime);
+  if (action === 'prepare') {
+    return prepareUpdate(dataDir, sessionId, runtime, {
+      reconcileBindings: Boolean(flags['reconcile-bindings'])
+    });
+  }
   if (action === 'retry') {
     const state = await readState(dataDir, sessionId);
     if (!state) throw Object.assign(new Error('Thread cache does not exist.'), { code: 'STATE_NOT_FOUND' });

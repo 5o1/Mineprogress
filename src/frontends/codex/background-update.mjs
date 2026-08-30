@@ -162,14 +162,18 @@ async function settleBackgroundRequest(dataDir, sessionId) {
 
 export async function runBackgroundUpdate(dataDir, sessionId, {
   runCommand = run,
-  invokeModel = invokeCodexJson
+  invokeModel = invokeCodexJson,
+  reconcileBindings = false
 } = {}) {
   const release = await acquireSessionLock(dataDir, sessionId, 'background', { waitMs: 0 });
   if (!release) return { outcome: 'already_running' };
   try {
     while (true) {
-      const prepared = await runCommand(['update', 'prepare', '--session', sessionId, '--data-dir', dataDir]);
-      if (['noop', 'pending_submission', 'paused_no_bindings', 'awaiting_evidence'].includes(prepared.outcome)) {
+      const prepareArgs = ['update', 'prepare', '--session', sessionId, '--data-dir', dataDir];
+      if (reconcileBindings) prepareArgs.push('--reconcile-bindings');
+      const prepared = await runCommand(prepareArgs);
+      if (prepared.outcome === 'paused_no_bindings') return prepared;
+      if (['noop', 'pending_submission', 'awaiting_evidence'].includes(prepared.outcome)) {
         if (await settleBackgroundRequest(dataDir, sessionId)) continue;
         return prepared;
       }
@@ -280,7 +284,9 @@ export async function runHook({
   if (!sessionId) return;
   const state = await withSessionLock(resolvedDataDir, sessionId, () => readState(resolvedDataDir, sessionId));
   if (!state || (!state.boundItems.length && !state.pendingPlan && !state.activeUpdate && !state.journal.length)) return;
-  return runUpdate(resolvedDataDir, sessionId);
+  return runUpdate(resolvedDataDir, sessionId, {
+    reconcileBindings: ['startup', 'resume'].includes(hookInput.source)
+  });
 }
 
 export async function main() {

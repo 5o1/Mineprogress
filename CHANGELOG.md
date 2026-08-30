@@ -7,6 +7,8 @@ Notable user-visible changes are documented here. Entries follow
 
 ### Fixed
 
+- Release a thread binding only after its configured terminal Project status and linked Issue closure
+  are verified, including recovery of already-settled bindings after an interrupted or older run.
 - Separated transient journal input from a per-item evidence ledger. Verified reviewed plans are
   folded into the ledger only after GitHub read-back, while a missing local ledger is reconstructed
   from compact Mineprogress-managed Issue comments or Draft progress sections.

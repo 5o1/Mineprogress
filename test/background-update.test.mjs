@@ -310,13 +310,17 @@ test('SessionStart background entry detects and resumes a persisted active trans
   const outcome = await runHook({
     input: { session_id: 'session-resume', source: 'resume' },
     dataDir,
-    runUpdate: async (actualDataDir, sessionId) => {
-      calls.push({ actualDataDir, sessionId });
+    runUpdate: async (actualDataDir, sessionId, options) => {
+      calls.push({ actualDataDir, sessionId, options });
       return { outcome: 'resumed' };
     }
   });
   assert.deepEqual(outcome, { outcome: 'resumed' });
-  assert.deepEqual(calls, [{ actualDataDir: dataDir, sessionId: 'session-resume' }]);
+  assert.deepEqual(calls, [{
+    actualDataDir: dataDir,
+    sessionId: 'session-resume',
+    options: { reconcileBindings: true }
+  }]);
 });
 
 test('background worker generates missing status rules before a durable status intent', async t => {
@@ -403,4 +407,24 @@ test('background worker retains an attempted submission when reconciliation is i
   assert.equal(result.outcome, 'submission_unverified');
   assert.equal(result.reconciliation.conflicts, 1);
   assert.deepEqual(calls, ['update prepare', 'update submit']);
+});
+
+test('background worker stops immediately after terminal bindings are released', async t => {
+  const dataDir = await fs.mkdtemp(path.join(os.tmpdir(), 'mineprogress-background-unbound-'));
+  t.after(() => fs.rm(dataDir, { recursive: true, force: true }));
+  let calls = 0;
+
+  const result = await runBackgroundUpdate(dataDir, 'session-unbound', {
+    runCommand: async argv => {
+      calls++;
+      assert.deepEqual(argv.slice(0, 2), ['update', 'prepare']);
+      assert.equal(argv.includes('--reconcile-bindings'), true);
+      return { outcome: 'paused_no_bindings', reason: 'All terminal bindings were verified and released.' };
+    },
+    invokeModel: async () => { throw new Error('No model call expected.'); },
+    reconcileBindings: true
+  });
+
+  assert.equal(result.outcome, 'paused_no_bindings');
+  assert.equal(calls, 1);
 });

@@ -40,6 +40,8 @@ Plain `unbind` changes only the thread candidate list. Explicit `unbind --delete
 Issue content, deletes the Project item, and then removes the local binding. Status updates also
 close Issues on configured terminal statuses and reopen them on non-terminal statuses. Archiving a
 Project item does not change Issue state.
+After GitHub verifies both a terminal Project status and linked Issue closure, Mineprogress releases
+that item from the thread automatically. Interrupted or unverified submissions keep the binding.
 
 ## Automatic update
 
