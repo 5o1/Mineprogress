@@ -5,6 +5,8 @@ Notable user-visible changes are documented here. Entries follow
 
 ## [Unreleased]
 
+## [0.6.0] - 2026-08-30
+
 ### Changed
 
 - Separated host-independent application, lifecycle, persistence, validation, and GitHub Projects
