@@ -5,6 +5,14 @@ Each bound item has an authoritative `contentLanguage` language tag. Write every
 not infer language from the conversation, title, existing body, or other items. When the user did
 not specify a language during create or bind, the stored value is `en`.
 
+`statusRules` is the authoritative workflow policy generated for the current Project status set.
+Evaluate the outgoing rules for every bound item on each durable update. Change an item's status
+only through an exact listed transition whose `when` boundary is supported by item evidence and
+whose `doNotApplyWhen` boundary is false. Do not force a transition when evidence is ambiguous. Do
+not treat Mineprogress generation, review, validation, background work, or submission as evidence
+that project work entered Review or another status. When rules are unavailable, leave status
+unchanged.
+
 `primaryRepository` is authoritative binding metadata. The script maintains that repository and its
 description in the Issue proposal's `## Repository` section; do not repeat it in a progress comment
 unless the repository itself is directly relevant to that delta. `referenceLinks` contains other

@@ -6,13 +6,42 @@ import path from 'node:path';
 import { parseProjectUrl, resolveInitializationCreationRepository } from '../scripts/mineprogress.mjs';
 import { run } from '../scripts/mineprogress.mjs';
 import { readProjectMetadata } from '../scripts/lib/metadata.mjs';
-import { createConfig, detectTerminalStatuses, selectDefaultStatus } from '../scripts/lib/config.mjs';
+import {
+  createConfig,
+  detectStatusRoles,
+  detectTerminalStatuses,
+  selectDefaultStatus,
+  synchronizeKanbanConfig
+} from '../scripts/lib/config.mjs';
 
 test('Kanban defaults prefer a starting status and detect conventional terminal statuses', () => {
   const statuses = ['In progress', 'Todo', 'In review', 'Done'];
   assert.equal(selectDefaultStatus(statuses), 'Todo');
   assert.deepEqual(detectTerminalStatuses(statuses), ['Done']);
+  assert.deepEqual(detectStatusRoles(statuses), {
+    queued: 'Todo', active: 'In progress', review: 'In review', blocked: '', completed: 'Done'
+  });
   assert.equal(selectDefaultStatus(['Doing', 'Shipped']), 'Doing');
+});
+
+test('Kanban synchronization preserves valid mappings and replaces missing remote statuses', () => {
+  const current = createConfig({
+    kanban: {
+      defaultStatus: 'Todo',
+      terminalStatuses: ['Done', 'Cancelled'],
+      statusRoles: {
+        queued: 'Todo', active: 'Doing', review: 'Review', blocked: '', completed: 'Done'
+      }
+    }
+  });
+  const result = synchronizeKanbanConfig(current, ['Backlog', 'Doing', 'In review', 'Blocked', 'Completed']);
+  assert.equal(result.config.kanban.defaultStatus, 'Backlog');
+  assert.deepEqual(result.config.kanban.terminalStatuses, ['Completed']);
+  assert.deepEqual(result.config.kanban.statusRoles, {
+    queued: 'Backlog', active: 'Doing', review: 'In review', blocked: 'Blocked', completed: 'Completed'
+  });
+  assert.ok(result.changes.some(change => change.path === 'kanban.defaultStatus'));
+  assert.ok(result.changes.some(change => change.path === 'kanban.statusRoles.review'));
 });
 
 test('guided initialization parses user and organization Project URLs', () => {
@@ -118,12 +147,19 @@ test('initialization writes config and global metadata without a preview phase',
   assert.equal('defaultRepository' in saved, false);
   assert.equal(saved.kanban.defaultStatus, 'Todo');
   assert.deepEqual(saved.kanban.terminalStatuses, ['Done']);
+  assert.deepEqual(saved.kanban.statusRoles, {
+    queued: 'Todo', active: 'Doing', review: '', blocked: '', completed: 'Done'
+  });
   assert.equal(result.defaultStatus, 'Todo');
   assert.equal(result.defaultStatusSource, 'detected');
   assert.equal(result.creationRepository, 'octocat/todos');
   assert.equal(result.creationRepositorySource, 'explicit');
+  assert.equal(result.statusRuleGeneration.required, true);
+  assert.equal(result.statusRuleGeneration.reason, 'initialization');
+  assert.deepEqual(result.statusRuleGeneration.statusRoles, result.statusRoles);
   const metadata = await readProjectMetadata(dataDir, saved);
   assert.deepEqual(metadata.availableStatuses, ['Doing', 'Todo', 'Done']);
+  assert.equal(metadata.statusRules, null);
   assert.equal(metadata.creationPolicy.route, 'draft');
 });
 

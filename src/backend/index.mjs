@@ -19,6 +19,12 @@ export {
   validateContentLanguage
 } from './language.mjs';
 export { calendarDate } from './calendar.mjs';
+export {
+  statusFingerprint,
+  statusRuleLines,
+  storedStatusRules,
+  validateStatusRules
+} from './status-rules.mjs';
 export { extractReferenceLinks, mergeReferenceLinks, normalizeReferenceLink } from './references.mjs';
 export {
   canManageRepositoryReference,

@@ -30,8 +30,8 @@ $mineprogress:status
 - `bind` adds an existing Project item without replacing its existing Issue body.
 - `unbind` normally removes only the thread binding; explicit `--delete` also closes a linked Issue
   and removes the Project item.
-- `check` discovers actual Kanban statuses and suggests items to bind or unbind without changing them.
-- `status` works offline and shows the creation route, available statuses, and unresolved errors.
+- `check` synchronizes Kanban statuses and transition rules, then suggests bindings without changing them.
+- `status` works offline and shows routing, statuses, transition rules, and unresolved errors.
 
 See [Configuration](docs/configuration.md), [Workflow](docs/workflow.md),
 [Architecture](docs/architecture.md), [Host adapters](docs/host-adapters.md), and

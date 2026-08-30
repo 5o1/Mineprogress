@@ -8,7 +8,14 @@ export const DEFAULT_CONFIG = {
   updateFieldName: 'Update',
   kanban: {
     defaultStatus: '',
-    terminalStatuses: []
+    terminalStatuses: [],
+    statusRoles: {
+      queued: '',
+      active: '',
+      review: '',
+      blocked: '',
+      completed: ''
+    }
   },
   creation: {
     repository: '',
@@ -50,6 +57,12 @@ const DEFAULT_STATUS_PATTERNS = [
   /^\u672a\u5f00\u59cb$/u
 ];
 const TERMINAL_STATUS_PATTERN = /^(?:done|complete|completed|closed|resolved|cancelled|canceled|not planned|won't do|won't fix|\u5df2\u5b8c\u6210|\u5df2\u53d6\u6d88)$/iu;
+const STATUS_ROLE_PATTERNS = {
+  active: /^(?:in progress|doing|active|implementing|development|\u8fdb\u884c\u4e2d|\u5904\u7406\u4e2d)$/iu,
+  review: /^(?:review|in review|code review|verification|qa|\u5f85\u5ba1\u6838|\u5ba1\u6838\u4e2d|\u9a8c\u6536)$/iu,
+  blocked: /^(?:blocked|on hold|waiting|stalled|\u963b\u585e|\u6682\u505c)$/iu
+};
+const STATUS_ROLE_NAMES = ['queued', 'active', 'review', 'blocked', 'completed'];
 
 function statusNames(statuses) {
   return (statuses || []).map(status => typeof status === 'string' ? status : status?.name)
@@ -71,13 +84,66 @@ export function selectDefaultStatus(statuses) {
   return names.find(status => !terminal.has(status)) || names[0] || '';
 }
 
+export function detectStatusRoles(statuses) {
+  const names = statusNames(statuses);
+  const terminal = detectTerminalStatuses(names);
+  return {
+    queued: selectDefaultStatus(names),
+    active: names.find(status => STATUS_ROLE_PATTERNS.active.test(status)) || '',
+    review: names.find(status => STATUS_ROLE_PATTERNS.review.test(status)) || '',
+    blocked: names.find(status => STATUS_ROLE_PATTERNS.blocked.test(status)) || '',
+    completed: terminal[0] || ''
+  };
+}
+
+export function synchronizeKanbanConfig(config, statuses) {
+  const names = statusNames(statuses);
+  const available = new Set(names);
+  const detected = detectStatusRoles(names);
+  const currentRoles = config.kanban?.statusRoles || {};
+  const statusRoles = Object.fromEntries(STATUS_ROLE_NAMES.map(role => {
+    const configured = currentRoles[role];
+    return [role, configured && available.has(configured) ? configured : detected[role]];
+  }));
+  const defaultStatus = available.has(config.kanban?.defaultStatus)
+    ? config.kanban.defaultStatus
+    : statusRoles.queued;
+  if (!statusRoles.queued) statusRoles.queued = defaultStatus;
+  const terminalStatuses = [...new Set([
+    ...(config.kanban?.terminalStatuses || []).filter(status => available.has(status)),
+    ...detectTerminalStatuses(names),
+    ...(statusRoles.completed ? [statusRoles.completed] : [])
+  ])];
+  const next = mergeConfig({
+    ...config,
+    kanban: { ...config.kanban, defaultStatus, terminalStatuses, statusRoles }
+  });
+  const changes = [];
+  for (const [path, before, after] of [
+    ['kanban.defaultStatus', config.kanban?.defaultStatus || '', defaultStatus],
+    ['kanban.terminalStatuses', config.kanban?.terminalStatuses || [], terminalStatuses],
+    ...STATUS_ROLE_NAMES.map(role => [
+      `kanban.statusRoles.${role}`,
+      currentRoles[role] || '',
+      statusRoles[role]
+    ])
+  ]) {
+    if (JSON.stringify(before) !== JSON.stringify(after)) changes.push({ path, before, after });
+  }
+  return { config: next, changes };
+}
+
 function mergeConfig(raw) {
   const { defaultRepository: legacyRepository, ...values } = raw;
   const repository = raw.creation?.repository ?? legacyRepository ?? DEFAULT_CONFIG.creation.repository;
   return {
     ...DEFAULT_CONFIG,
     ...values,
-    kanban: { ...DEFAULT_CONFIG.kanban, ...raw.kanban },
+    kanban: {
+      ...DEFAULT_CONFIG.kanban,
+      ...raw.kanban,
+      statusRoles: { ...DEFAULT_CONFIG.kanban.statusRoles, ...raw.kanban?.statusRoles }
+    },
     creation: {
       ...DEFAULT_CONFIG.creation,
       ...raw.creation,
@@ -126,6 +192,9 @@ export async function loadConfig(file) {
   }
   if (typeof config.kanban.defaultStatus !== 'string') {
     throw Object.assign(new Error('kanban.defaultStatus must be a status name'), { code: 'CONFIG_INVALID' });
+  }
+  if (STATUS_ROLE_NAMES.some(role => typeof config.kanban.statusRoles?.[role] !== 'string')) {
+    throw Object.assign(new Error('kanban.statusRoles must map every role to a status name or empty string'), { code: 'CONFIG_INVALID' });
   }
   return config;
 }

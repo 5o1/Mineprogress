@@ -5,14 +5,35 @@ import os from 'node:os';
 import path from 'node:path';
 import { reconcilePendingUpdate, run, submitPendingUpdate } from '../scripts/mineprogress.mjs';
 import { createConfig, saveConfig } from '../scripts/lib/config.mjs';
+import { updateProjectMetadata } from '../scripts/lib/metadata.mjs';
 import { appendJournal, bindItem, openSession, readState, writeState } from '../scripts/lib/state.mjs';
+import { storedStatusRules } from '../src/backend/status-rules.mjs';
 
 test('reviewed incremental plan is stored before one later GitHub submission', async t => {
   const dataDir = await fs.mkdtemp(path.join(os.tmpdir(), 'mineprogress-planning-'));
   t.after(() => fs.rm(dataDir, { recursive: true, force: true }));
-  await saveConfig(path.join(dataDir, 'config.json'), createConfig({
-    owner: 'octocat', ownerType: 'user', projectNumber: 1
-  }));
+  const config = createConfig({
+    owner: 'octocat', ownerType: 'user', projectNumber: 1,
+    kanban: { defaultStatus: 'Todo', terminalStatuses: ['Done'] }
+  });
+  await saveConfig(path.join(dataDir, 'config.json'), config);
+  const availableStatuses = ['Todo', 'Done'];
+  await updateProjectMetadata(dataDir, config, {
+    availableStatuses,
+    statusRules: storedStatusRules({
+      statuses: availableStatuses.map(name => ({
+        name,
+        enterWhen: `Enter ${name} only when durable repository evidence satisfies its boundary.`,
+        doNotEnterWhen: `Do not enter ${name} for questions, plans, or agent control activity.`
+      })),
+      transitions: [{
+        from: 'Todo',
+        to: 'Done',
+        when: 'Move when required implementation and verification are demonstrably complete.',
+        doNotApplyWhen: 'Do not move while required implementation or verification remains.'
+      }]
+    }, availableStatuses)
+  });
   const { state } = await openSession(dataDir, 'session-1');
   bindItem(state, { itemId: 'PVTI_1', title: 'Parser' });
   appendJournal(state, { kind: 'user', turnId: 'turn-1', text: 'Implemented the parser.' });
@@ -78,6 +99,7 @@ test('reviewed incremental plan is stored before one later GitHub submission', a
   assert.deepEqual(prepared.promptNames, ['bind']);
   assert.equal(prepared.boundItems[0].backfillRequested, true);
   assert.equal(prepared.boundItems[0].proposalWritable, false);
+  await updateProjectMetadata(dataDir, config, { availableStatuses, statusRules: null });
   assert.equal((await run(['update', 'stage', '--plan', planFile, '--session', 'session-1', '--data-dir', dataDir])).accepted, true);
   const planned = await run(['update', 'apply', '--review', reviewFile, '--session', 'session-1', '--data-dir', dataDir]);
   assert.equal(planned.queuedOperations, 2);

@@ -27,3 +27,6 @@ Reject the plan if any answer is unsatisfactory:
     and unrelated URLs?
 12. Primary repository: Does the plan leave `primaryRepository` synchronization to the script and
     avoid redundantly copying that stable link into unrelated progress comments?
+13. Status transition: Does every proposed status change follow an exact `statusRules` transition,
+    satisfy its evidence boundary, and avoid every stated exclusion without confusing Mineprogress's
+    internal reviewer with review of the project work?

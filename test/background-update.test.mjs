@@ -16,6 +16,12 @@ test('background worker generates and reviews a plan without submitting it', asy
     prompt: 'Update contract',
     existingPlan: { updates: [] },
     availableStatuses: ['Todo', 'Done'],
+    statusRules: { transitions: [{
+      from: 'Todo',
+      to: 'Done',
+      when: 'Required implementation and verification are complete.',
+      doNotApplyWhen: 'Required work or verification remains incomplete.'
+    }] },
     boundItems: [{ itemId: 'PVTI_1', title: 'Parser', contentLanguage: 'en' }],
     referenceLinks: ['https://github.com/example/parser'],
     context: [{ sequence: 1, kind: 'user', text: 'Parser is complete.' }],
@@ -59,9 +65,11 @@ test('background worker generates and reviews a plan without submitting it', asy
   assert.match(prompts[0], /Parser is complete/);
   assert.match(prompts[0], /contentLanguage/);
   assert.match(prompts[0], /https:\/\/github.com\/example\/parser/);
+  assert.match(prompts[0], /Required implementation and verification are complete/);
   assert.match(prompts[0], /messages from before Mineprogress was installed/);
   assert.match(prompts[1], /proposedPlan/);
   assert.match(prompts[1], /Reviewer checklist/);
+  assert.match(prompts[1], /Required work or verification remains incomplete/);
 });
 
 test('background worker skips review for an accepted incremental no-op', async t => {

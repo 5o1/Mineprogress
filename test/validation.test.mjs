@@ -41,6 +41,29 @@ test('static plan validation accepts a bound concise update and approved no-op',
   assert.equal(validatePlan({ updates: [] }, options).valid, true);
 });
 
+test('static plan validation permits only generated status transitions', () => {
+  const transitionOptions = {
+    ...options,
+    boundItems: [{ itemId: 'PVTI_1', status: 'In progress' }],
+    statusRules: {
+      transitions: [{
+        from: 'In progress',
+        to: 'Blocked',
+        when: 'A concrete external dependency prevents further implementation.',
+        doNotApplyWhen: 'Do not use for ordinary questions or unfinished local work.'
+      }]
+    }
+  };
+  assert.equal(validatePlan({
+    updates: [{ itemId: 'PVTI_1', status: 'Blocked' }]
+  }, transitionOptions).valid, true);
+  const report = validatePlan({
+    updates: [{ itemId: 'PVTI_1', status: 'Done' }]
+  }, transitionOptions);
+  assert.equal(report.valid, false);
+  assert.match(report.errors.join(' '), /no generated transition rule from In progress to Done/);
+});
+
 test('static plan validation rejects unbound writes, extra fields, and personal data', () => {
   const report = validatePlan({ updates: [{ itemId: 'PVTI_2', title: 'Changed', summary: 'Email me@example.com' }] }, options);
   assert.equal(report.valid, false);

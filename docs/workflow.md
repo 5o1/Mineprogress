@@ -20,7 +20,11 @@ Codex exposes one explicit Skill per operation: `$mineprogress:init`, `$mineprog
 `$mineprogress:bind`, `$mineprogress:unbind`, `$mineprogress:update`, `$mineprogress:check`, and
 `$mineprogress:status`. The plugin does not register a custom slash command. Creation binds its new
 item immediately. `check` returns `suggestedAdd` and `suggestedRemove` but never changes the candidate
-list. Mutating commands consume a short-lived authorization recorded by UserPromptSubmit, so the CLI
+list. Before suggesting changes, it refreshes remote Project statuses and synchronizes the plugin's
+private default, terminal, and semantic-role configuration. A changed status set triggers bounded
+rule generation; the script stores rules only after validating exact names and reachability, while
+`status` renders the cached policy without network access. Mutating commands consume a short-lived
+authorization recorded by UserPromptSubmit, so the CLI
 cannot create or change bindings on an unrelated turn. Control commands are excluded from later
 update content. Before recording the first prompt on a later local calendar date,
 UserPromptSubmit submits and verifies any reviewed pending plan. A confirmed daily submission is

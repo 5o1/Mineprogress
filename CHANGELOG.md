@@ -10,6 +10,10 @@ Notable user-visible changes are documented here. Entries follow
 - Separated host-independent application, lifecycle, persistence, validation, and GitHub Projects
   logic from Codex CLI, hook, authentication, and model-runtime adapters.
 - Reduced legacy `scripts/` modules to compatibility entrypoints while preserving existing imports.
+- Made `check` synchronize changed remote Project statuses into private default, terminal, and
+  workflow-role configuration before producing binding suggestions. Initialization and changed
+  status sets now trigger agent-generated, script-validated transition rules that constrain updates
+  and are visible through `status`.
 
 ### Added
 
@@ -34,7 +38,6 @@ Notable user-visible changes are documented here. Entries follow
   through a guarded, script-owned Issue proposal section instead of an appended progress comment.
 - Submitted and verified a reviewed pending plan before recording the first user prompt on a later
   local calendar date, without repeating the automatic submission again that day.
-
 ## [0.5.0] - 2026-08-30
 
 ### Added

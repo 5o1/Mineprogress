@@ -1,6 +1,15 @@
 import fs from 'node:fs/promises';
 import path from 'node:path';
-import { configPath, createConfig, creationRepository, detectTerminalStatuses, loadConfig, saveConfig, selectDefaultStatus } from './config.mjs';
+import {
+  configPath,
+  createConfig,
+  creationRepository,
+  detectTerminalStatuses,
+  loadConfig,
+  saveConfig,
+  selectDefaultStatus,
+  synchronizeKanbanConfig
+} from './config.mjs';
 import { suggestBindings } from './check.mjs';
 import {
   applyPreparedOperations,
@@ -19,6 +28,12 @@ import { normalizeContentLanguage } from './language.mjs';
 import { readProjectMetadata, updateProjectMetadata } from './metadata.mjs';
 import { extractReferenceLinks, mergeReferenceLinks } from './references.mjs';
 import { primaryRepositoryFromLinks } from './repository-reference.mjs';
+import {
+  statusFingerprint,
+  statusRuleLines,
+  storedStatusRules,
+  validateStatusRules
+} from './status-rules.mjs';
 import {
   beginUpdate,
   beginSubmissionAttempt,
@@ -52,6 +67,29 @@ async function runtimeReferenceLinks(runtime) {
 
 function pluginConfig(dataDir, runtime) {
   return loadConfig(configPath(runtime.environment || {}, runtime.resourceRoot, dataDir));
+}
+
+function statusRuleGeneration(config, availableStatuses, rules, reason = 'missing') {
+  return {
+    required: !rules,
+    reason: rules ? null : reason,
+    fingerprint: statusFingerprint(availableStatuses),
+    availableStatuses,
+    defaultStatus: config.kanban.defaultStatus,
+    terminalStatuses: config.kanban.terminalStatuses,
+    statusRoles: config.kanban.statusRoles,
+    prompt: 'prompts/status-rules.md'
+  };
+}
+
+function reusableStatusRules(metadata, availableStatuses, defaultStatus) {
+  const rules = metadata?.statusRules;
+  if (!rules || rules.fingerprint !== statusFingerprint(availableStatuses)) return null;
+  const report = validateStatusRules({
+    statuses: rules.statuses,
+    transitions: rules.transitions
+  }, { statuses: availableStatuses, defaultStatus });
+  return report.valid ? rules : null;
 }
 
 export function parseCommandArgs(argv) {
@@ -162,6 +200,7 @@ async function inspectInitialization(dataDir, flags, runtime) {
       terminalStatuses: detectTerminalStatuses(availableStatuses)
     }
   });
+  config = synchronizeKanbanConfig(config, availableStatuses).config;
   const creationPolicy = repositorySelection.selectionRequired
     ? null
     : await inspectCreationPolicy(config, client, project);
@@ -199,6 +238,7 @@ async function initCommand(dataDir, flags, positional, runtime) {
     defaultStatus: inspection.config.kanban.defaultStatus || null,
     defaultStatusSource: inspection.defaultStatusSource,
     terminalStatuses: inspection.config.kanban.terminalStatuses,
+    statusRoles: inspection.config.kanban.statusRoles,
     statusFieldFound: inspection.statusFieldFound,
     configTarget: inspection.configTarget
   };
@@ -218,6 +258,8 @@ async function initCommand(dataDir, flags, positional, runtime) {
   await saveConfig(inspection.configTarget, inspection.config);
   await updateProjectMetadata(dataDir, inspection.config, {
     availableStatuses: inspection.availableStatuses,
+    statusRoles: inspection.config.kanban.statusRoles,
+    statusRules: null,
     creationPolicy: {
       repository: inspection.creationPolicy.repository,
       projectVisibility: inspection.creationPolicy.projectVisibility,
@@ -230,7 +272,13 @@ async function initCommand(dataDir, flags, positional, runtime) {
     outcome: 'initialized',
     ...result,
     updateFieldFound: true,
-    updateFieldCreated: !inspection.updateFieldFound
+    updateFieldCreated: !inspection.updateFieldFound,
+    statusRuleGeneration: statusRuleGeneration(
+      inspection.config,
+      inspection.availableStatuses,
+      null,
+      'initialization'
+    )
   };
 }
 
@@ -330,15 +378,47 @@ async function unbindCommand(dataDir, flags, positional, runtime) {
 
 async function checkCommand(dataDir, flags, runtime) {
   const sessionId = requiredSession(flags, runtime);
-  const state = await readState(dataDir, sessionId);
-  if (!state) throw Object.assign(new Error('Thread cache does not exist.'), { code: 'STATE_NOT_FOUND' });
-  const config = await pluginConfig(dataDir, runtime);
+  const state = await readState(dataDir, sessionId) || { boundItems: [] };
+  let config = await pluginConfig(dataDir, runtime);
+  const previousMetadata = await readProjectMetadata(dataDir, config);
   const client = await runtime.githubClient();
   const project = await readProject(config, client);
   const availableStatuses = projectStatusOptions(project, config).map(option => option.name);
+  if (!availableStatuses.length) {
+    throw Object.assign(new Error(`Create a populated single-select field named ${config.statusFieldName} in the Project, then rerun check.`), { code: 'PROJECT_STATUS_FIELD_REQUIRED' });
+  }
+  const synchronization = synchronizeKanbanConfig(config, availableStatuses);
+  config = synchronization.config;
+  if (synchronization.changes.length) {
+    await saveConfig(configPath(runtime.environment || {}, runtime.resourceRoot, dataDir), config);
+  }
+  let statusRules = reusableStatusRules(
+    previousMetadata,
+    availableStatuses,
+    config.kanban.defaultStatus
+  );
+  let ruleGenerationReason = 'missing';
+  if (previousMetadata?.statusRules) {
+    ruleGenerationReason = previousMetadata.statusRules.fingerprint === statusFingerprint(availableStatuses)
+      ? 'rules_invalid'
+      : 'statuses_changed';
+  }
+  if (flags['rules-file']) {
+    const candidate = await readJson(flags['rules-file']);
+    const report = validateStatusRules(candidate, {
+      statuses: availableStatuses,
+      defaultStatus: config.kanban.defaultStatus
+    });
+    if (!report.valid) {
+      throw Object.assign(new Error(report.errors.join(' ')), { code: 'STATUS_RULES_INVALID' });
+    }
+    statusRules = storedStatusRules(candidate, availableStatuses);
+  }
   const creationPolicy = await inspectCreationPolicy(config, client, project);
   await updateProjectMetadata(dataDir, config, {
     availableStatuses,
+    statusRoles: config.kanban.statusRoles,
+    statusRules,
     creationPolicy: {
       repository: creationPolicy.repository,
       projectVisibility: creationPolicy.projectVisibility,
@@ -351,6 +431,15 @@ async function checkCommand(dataDir, flags, runtime) {
     availableStatuses,
     defaultStatus: config.kanban.defaultStatus || null,
     terminalStatuses: config.kanban.terminalStatuses,
+    statusRoles: config.kanban.statusRoles,
+    configurationChanges: synchronization.changes,
+    statusRuleGeneration: statusRuleGeneration(
+      config,
+      availableStatuses,
+      statusRules,
+      ruleGenerationReason
+    ),
+    statusRules: statusRuleLines(statusRules),
     defaultStatusAvailable: availableStatuses.includes(config.kanban.defaultStatus),
     creationPolicy: {
       repository: creationPolicy.repository,
@@ -397,7 +486,13 @@ async function prepareUpdate(dataDir, sessionId, runtime) {
   const project = await readProject(config, await runtime.githubClient());
   const availableStatuses = projectStatusOptions(project, config).map(option => option.name);
   const workspaceReferenceLinks = await runtimeReferenceLinks(runtime);
-  await updateProjectMetadata(dataDir, config, { availableStatuses });
+  const previousMetadata = await readProjectMetadata(dataDir, config);
+  const statusRules = reusableStatusRules(
+    previousMetadata,
+    availableStatuses,
+    config.kanban.defaultStatus
+  );
+  await updateProjectMetadata(dataDir, config, { availableStatuses, statusRules });
   const state = await withSessionLock(dataDir, sessionId, async () => {
     const latest = await readState(dataDir, sessionId);
     if (!latest?.activeUpdate || latest.activeUpdate.runId !== setup.runId) {
@@ -417,7 +512,9 @@ async function prepareUpdate(dataDir, sessionId, runtime) {
     latest.activeUpdate.projectSnapshot = {
       id: project.id,
       fields: project.fields,
-      normalizedItems: project.normalizedItems
+      normalizedItems: project.normalizedItems,
+      availableStatuses,
+      statusRules
     };
     await writeState(dataDir, latest);
     return latest;
@@ -454,6 +551,7 @@ async function prepareUpdate(dataDir, sessionId, runtime) {
     prompt,
     existingPlan: state.pendingPlan?.plan || { updates: [] },
     availableStatuses,
+    statusRules,
     promptNames,
     planningDate: new Date().toISOString().slice(0, 10),
     allowedOutput: { updates: [{
@@ -511,9 +609,6 @@ async function stageUpdate(dataDir, sessionId, flags, runtime) {
   const config = await pluginConfig(dataDir, runtime);
   const plan = await readJson(flags.plan);
   const metadata = await readProjectMetadata(dataDir, config);
-  if (!metadata?.availableStatuses?.length) {
-    throw Object.assign(new Error('Kanban statuses are not cached; run check or update prepare first.'), { code: 'KANBAN_STATUS_UNKNOWN' });
-  }
   return withSessionLock(dataDir, sessionId, async () => {
     const state = await readState(dataDir, sessionId);
     if (!state?.activeUpdate) throw Object.assign(new Error('No update run is active.'), { code: 'UPDATE_NOT_ACTIVE' });
@@ -534,14 +629,21 @@ async function stageUpdate(dataDir, sessionId, flags, runtime) {
       state.activeUpdate,
       state.activeUpdate.projectSnapshot.normalizedItems
     );
+    const projectSnapshot = state.activeUpdate.projectSnapshot;
+    const allowedStatuses = projectSnapshot.availableStatuses || metadata?.availableStatuses;
+    if (!allowedStatuses?.length) {
+      throw Object.assign(new Error('Kanban statuses are not cached; run check or update prepare first.'), { code: 'KANBAN_STATUS_UNKNOWN' });
+    }
+    const snapshotHasRules = Object.hasOwn(projectSnapshot, 'statusRules');
     const report = validatePlan(plan, {
       boundItems: validationItems,
-      allowedStatuses: metadata.availableStatuses,
+      allowedStatuses,
       maxCharacters: config.update.maxSummaryCharacters,
       maxWords: config.update.maxSummaryWords,
       maxBodyCharacters: config.update.maxBodyCharacters,
       maxCommentCharacters: config.update.maxCommentCharacters,
-      existingPlan: incrementalNoop ? { updates: [] } : state.pendingPlan?.plan || { updates: [] }
+      existingPlan: incrementalNoop ? { updates: [] } : state.pendingPlan?.plan || { updates: [] },
+      statusRules: snapshotHasRules ? projectSnapshot.statusRules : metadata?.statusRules || null
     });
     if (!report.valid) {
       state.activeUpdate.stagedPlan = null;
@@ -746,10 +848,20 @@ async function statusCommand(dataDir, flags, positional, runtime) {
   const kanbanPolicyLine = config?.kanban?.defaultStatus
     ? `Kanban policy: default ${config.kanban.defaultStatus}; terminal ${config.kanban.terminalStatuses.length ? config.kanban.terminalStatuses.join(', ') : 'none'}.`
     : 'Kanban policy: default status unknown; rerun init.';
+  const statusRules = statusRuleLines(metadata?.statusRules || null);
   const pendingPlanLine = state?.pendingPlan
     ? `Pending submission: ${state.pendingPlan.plan.updates.length} item update(s), ${state.pendingPlan.operations.length} write operation(s), ${state.pendingPlan.submissionStatus}.`
     : 'Pending submission: none.';
-  return { scope: all ? 'all sessions' : sessionId, creationPolicyLine, kanbanStatusLine, kanbanPolicyLine, pendingPlanLine, unresolvedCount: errors.length, errors };
+  return {
+    scope: all ? 'all sessions' : sessionId,
+    creationPolicyLine,
+    kanbanStatusLine,
+    kanbanPolicyLine,
+    statusRules,
+    pendingPlanLine,
+    unresolvedCount: errors.length,
+    errors
+  };
 }
 
 async function recordErrorCommand(dataDir, flags, runtime) {

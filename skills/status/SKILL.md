@@ -12,6 +12,6 @@ node <plugin-root>/scripts/mineprogress.mjs status --session <session_id> --data
 ```
 
 Show `creationPolicyLine`, `kanbanStatusLine`, and `kanbanPolicyLine` on separate lines, followed by
-only unresolved summaries for this session. Use `status --all` only when explicitly requested. For an explicit `resolve <errorId>`
+every `statusRules` line and only unresolved summaries for this session. Use `status --all` only when explicitly requested. For an explicit `resolve <errorId>`
 invocation, run `status resolve <errorId>`; it appends a resolution event and never rewrites or
 exposes the complete error log.

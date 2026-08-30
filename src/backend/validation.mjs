@@ -172,7 +172,8 @@ export function validatePlan(plan, {
   maxWords = 80,
   maxBodyCharacters = 60000,
   maxCommentCharacters = 10000,
-  existingPlan = { updates: [] }
+  existingPlan = { updates: [] },
+  statusRules = null
 }) {
   const errors = [];
   if (!plan || typeof plan !== 'object' || Array.isArray(plan)) return { valid: false, errors: ['Plan must be a JSON object.'] };
@@ -200,6 +201,14 @@ export function validatePlan(plan, {
       errors.push(`${prefix} must change status, summary, body, or comment.`);
     }
     if (update.status && !allowedStatusNames.has(update.status)) errors.push(`${prefix}.status is not allowed.`);
+    if (update.status && item?.status && update.status !== item.status &&
+        existingById.get(update.itemId)?.status !== update.status) {
+      const transition = statusRules?.transitions?.find(rule =>
+        rule.from === item.status && rule.to === update.status);
+      if (!transition) {
+        errors.push(`${prefix}.status has no generated transition rule from ${item.status} to ${update.status}; run check.`);
+      }
+    }
     if (update.summary !== undefined) {
       if (typeof update.summary !== 'string' || !update.summary.trim()) errors.push(`${prefix}.summary must be non-empty text.`);
       const summary = String(update.summary || '');

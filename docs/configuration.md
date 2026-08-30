@@ -30,6 +30,9 @@ configuration. `config.example.json` documents the complete schema; users do not
   non-terminal option.
 - `kanban.terminalStatuses`: statuses that close linked Issues. Initialization recognizes
   conventional terminal names such as `Done`, `Completed`, or `Closed`; users can override the list.
+- `kanban.statusRoles`: maps the semantic `queued`, `active`, `review`, `blocked`, and `completed`
+  roles to exact Project status names. Empty roles are allowed when the Project has no matching
+  status.
 - `update.maxBodyCharacters` / `maxCommentCharacters`: static limits for managed Markdown content.
 
 ## Content contracts
@@ -49,11 +52,17 @@ history is stored in dated comments. Drafts cannot receive comments, so their bo
 by an exact-prefix append. Remote content is read again before any body mutation to prevent a stale
 plan from overwriting an external edit.
 
-`check` reads the real options from the Status field and saves them in the global plugin cache.
-Only configured `kanban.terminalStatuses` produce removal suggestions or synchronize linked Issues
-to closed. A Mineprogress update that moves a linked Project item back to a non-terminal status
-reopens its Issue. Direct edits on github.com require a GitHub Project workflow because a local
-plugin cannot receive those remote events.
+`check` first reads the real options from the Status field, then synchronizes private plugin
+configuration and global metadata before producing binding suggestions. Valid user mappings are
+preserved; missing status references are removed or replaced by recognizable Project names. During
+initialization, and whenever `check` detects a changed status set, the active command agent generates
+explicit entry, exclusion, and transition boundaries from `prompts/status-rules.md`. The script
+accepts the result only when every exact Project status is reachable from the default status. Rules
+are global Project metadata, appear in `status`, and constrain later update generation and static
+validation. Only synchronized `kanban.terminalStatuses` produce removal suggestions or close linked
+Issues. A Mineprogress update that moves a linked Project item back to a non-terminal status reopens
+its Issue. Direct edits on github.com require a later `check` because a local plugin cannot receive
+those remote events.
 
 ## Creation routes
 

@@ -6,7 +6,14 @@
   "updateFieldName": "Update",
   "kanban": {
     "defaultStatus": "Todo",
-    "terminalStatuses": ["Done"]
+    "terminalStatuses": ["Done"],
+    "statusRoles": {
+      "queued": "Todo",
+      "active": "In Progress",
+      "review": "Review",
+      "blocked": "Blocked",
+      "completed": "Done"
+    }
   },
   "creation": {
     "repository": "your-github-login/private-todos",

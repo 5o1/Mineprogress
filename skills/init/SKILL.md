@@ -19,6 +19,12 @@ missing `Update` text field, and saves configuration immediately. On `initialize
 Project, Issue repository and its selection source, visibility, creation route, statuses, and field
 creation result. Do not call the Issue repository the GitHub default.
 
+On successful initialization, if `statusRuleGeneration.required` is true, read
+`prompts/status-rules.md`, generate only its JSON object from `statusRuleGeneration`, save it in a
+private temporary file, and run `check --rules-file <file>` with the same session and data directory.
+Delete the temporary file afterward. Initialization is complete only after those rules pass script
+validation and are stored.
+
 If it returns `repository_selection_required`, explain the API limitation, present only its linked
 repository candidates, and ask which repository Mineprogress should use for Issues. Rerun init with
 `--repository <owner/name>`, or use `--no-repository` only when the user explicitly chooses
