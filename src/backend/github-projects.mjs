@@ -275,6 +275,16 @@ async function setIssueState(client, contentId, state) {
   return data.updateIssue.issue.state;
 }
 
+export async function closeLinkedIssue(client, item) {
+  if (item?.contentType !== 'issue' || item.contentState === 'CLOSED') return false;
+  if (!item.contentId) {
+    throw infrastructureError('A terminal Project item has an open Issue without a content id.', 'PROJECT_ITEM_CONTENT_MISSING');
+  }
+  await setIssueState(client, item.contentId, 'CLOSED');
+  item.contentState = 'CLOSED';
+  return true;
+}
+
 export async function deleteKanbanItem(client, project, itemId, fallback = {}) {
   const item = project.normalizedItems.find(candidate => candidate.itemId === itemId);
   const target = item || fallback;
@@ -382,6 +392,7 @@ export function prepareUpdateOperations(config, project, plan, {
   const operations = [];
   for (const update of plan.updates) {
     const item = items.get(update.itemId);
+    if (config.kanban?.terminalStatuses?.includes(item?.status)) continue;
     const repository = repositories.get(update.itemId);
     const proposalWrite = proposalIds.has(update.itemId);
     if (repository && item?.contentType === 'issue' && !proposalWrite &&

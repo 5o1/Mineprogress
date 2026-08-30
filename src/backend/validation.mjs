@@ -198,6 +198,9 @@ export function validatePlan(plan, {
     seen.add(update.itemId);
     const item = itemsById.get(update.itemId);
     const contentLanguage = item?.contentLanguage || 'en';
+    if (terminalStatuses.includes(item?.status)) {
+      errors.push(`${prefix} targets an item whose remote Project status is terminal.`);
+    }
     if (!update.status && !update.summary && !update.body && !update.comment) {
       errors.push(`${prefix} must change status, summary, body, or comment.`);
     }

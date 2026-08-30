@@ -163,7 +163,7 @@ async function settleBackgroundRequest(dataDir, sessionId) {
 export async function runBackgroundUpdate(dataDir, sessionId, {
   runCommand = run,
   invokeModel = invokeCodexJson,
-  reconcileBindings = false
+  reconcileBindings = true
 } = {}) {
   const release = await acquireSessionLock(dataDir, sessionId, 'background', { waitMs: 0 });
   if (!release) return { outcome: 'already_running' };
@@ -179,7 +179,7 @@ export async function runBackgroundUpdate(dataDir, sessionId, {
       }
       if (prepared.outcome === 'submission_unverified') {
         const reconciliation = await runCommand(['update', 'submit', '--session', sessionId, '--data-dir', dataDir]);
-        if (reconciliation.submitted && reconciliation.verified) continue;
+        if (reconciliation.verified) continue;
         return { outcome: 'submission_unverified', reconciliation };
       }
       if (prepared.outcome === 'status_rules_required') {
@@ -285,7 +285,7 @@ export async function runHook({
   const state = await withSessionLock(resolvedDataDir, sessionId, () => readState(resolvedDataDir, sessionId));
   if (!state || (!state.boundItems.length && !state.pendingPlan && !state.activeUpdate && !state.journal.length)) return;
   return runUpdate(resolvedDataDir, sessionId, {
-    reconcileBindings: ['startup', 'resume'].includes(hookInput.source)
+    reconcileBindings: true
   });
 }
 

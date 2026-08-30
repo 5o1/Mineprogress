@@ -431,3 +431,27 @@ test('background worker stops immediately after terminal bindings are released',
   assert.equal(result.outcome, 'paused_no_bindings');
   assert.equal(calls, 1);
 });
+
+test('background worker continues after discarding an unverified terminal-item transaction', async t => {
+  const dataDir = await fs.mkdtemp(path.join(os.tmpdir(), 'mineprogress-background-terminal-discard-'));
+  t.after(() => fs.rm(dataDir, { recursive: true, force: true }));
+  const calls = [];
+  let prepares = 0;
+
+  const result = await runBackgroundUpdate(dataDir, 'session-terminal-discard', {
+    runCommand: async argv => {
+      calls.push(argv.slice(0, 2).join(' '));
+      if (argv[1] === 'submit') {
+        return { submitted: false, verified: true, terminalBindingsReleased: ['PVTI_1'] };
+      }
+      prepares++;
+      return prepares === 1
+        ? { outcome: 'submission_unverified' }
+        : { outcome: 'paused_no_bindings' };
+    },
+    invokeModel: async () => { throw new Error('No model call expected.'); }
+  });
+
+  assert.equal(result.outcome, 'paused_no_bindings');
+  assert.deepEqual(calls, ['update prepare', 'update submit', 'update prepare']);
+});

@@ -30,6 +30,7 @@ configuration. `config.example.json` documents the complete schema; users do not
   non-terminal option.
 - `kanban.terminalStatuses`: statuses that close linked Issues. Initialization recognizes
   conventional terminal names such as `Done`, `Completed`, or `Closed`; users can override the list.
+  Remote membership in this list is authoritative and makes the item immutable to Mineprogress.
 - `kanban.statusRoles`: maps the semantic `queued`, `active`, `review`, `blocked`, and `completed`
   roles to exact Project status names. Empty roles are allowed when the Project has no matching
   status.
@@ -59,10 +60,12 @@ initialization, and whenever `check` detects a changed status set, the active co
 explicit entry, exclusion, and transition boundaries from `prompts/status-rules.md`. The script
 accepts the result only when every exact Project status is reachable from the default status. Rules
 are global Project metadata, appear in `status`, and constrain later update generation and static
-validation. Only synchronized `kanban.terminalStatuses` produce removal suggestions or close linked
-Issues. A Mineprogress update that moves a linked Project item back to a non-terminal status reopens
-its Issue. Direct edits on github.com require a later `check` because a local plugin cannot receive
-those remote events.
+validation. Only synchronized `kanban.terminalStatuses` trigger automatic release. When a bound item
+is observed in one of those statuses, Mineprogress closes its linked Issue if necessary, discards
+queued writes for that item, and unbinds it. Terminal items cannot be reopened or otherwise modified
+by the plugin. Direct edits on github.com are observed by the next background update, submission
+preflight, resume, or explicit `check`; the local plugin cannot receive the edit before one of those
+events runs.
 
 ## Creation routes
 

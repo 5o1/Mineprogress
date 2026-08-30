@@ -22,7 +22,7 @@ import {
   readState,
   recoverEvidencePausedUpdate,
   recoverExhaustedUpdate,
-  releaseVerifiedTerminalBindings,
+  releaseRemoteTerminalBindings,
   recordPreparedUpdate,
   recordReviewedUpdate,
   recordStatusIntent,
@@ -463,7 +463,7 @@ test('verified evidence and status intent revisions survive transaction interrup
   assert.equal(state.boundItems[0].statusIntentRevision, 2);
 });
 
-test('verified terminal release preserves unsettled and concurrently changed bindings', () => {
+test('remote terminal status releases bindings despite local intent or open Issue state', () => {
   const terminalStatus = fixtureStatus('terminal');
   const activeStatus = fixtureStatus('active');
   const state = newStateForTest();
@@ -474,18 +474,18 @@ test('verified terminal release preserves unsettled and concurrently changed bin
   appendJournal(state, { kind: 'user', turnId: 'turn-1', text: 'Keep active context.' });
   recordStatusIntent(state, 'PVTI_ACTIVE', activeStatus, 1, { role: 'review' });
 
-  const released = releaseVerifiedTerminalBindings(state, [
+  const released = releaseRemoteTerminalBindings(state, [
     { itemId: 'PVTI_DONE', status: terminalStatus, contentType: 'issue', contentState: 'CLOSED' },
     { itemId: 'PVTI_OPEN', status: terminalStatus, contentType: 'issue', contentState: 'OPEN' },
-    { itemId: 'PVTI_ACTIVE', status: terminalStatus, contentType: 'issue', contentState: 'CLOSED' }
+    { itemId: 'PVTI_ACTIVE', status: activeStatus, contentType: 'issue', contentState: 'CLOSED' }
   ], [terminalStatus]);
 
-  assert.deepEqual(released, ['PVTI_DONE']);
-  assert.deepEqual(state.boundItems.map(item => item.itemId), ['PVTI_OPEN', 'PVTI_ACTIVE']);
+  assert.deepEqual(released, ['PVTI_DONE', 'PVTI_OPEN']);
+  assert.deepEqual(state.boundItems.map(item => item.itemId), ['PVTI_ACTIVE']);
   assert.equal(state.journal.length, 1);
 });
 
-test('a newly bound terminal item remains bound until full-history backfill is planned', () => {
+test('a newly bound terminal item is released before full-history backfill', () => {
   const terminalStatus = fixtureStatus('terminal');
   const state = newStateForTest();
   bindItem(state, { itemId: 'PVTI_DONE', title: 'Historical task', contentType: 'issue' });
@@ -493,14 +493,57 @@ test('a newly bound terminal item remains bound until full-history backfill is p
     itemId: 'PVTI_DONE', status: terminalStatus, contentType: 'issue', contentState: 'CLOSED'
   }];
 
-  assert.deepEqual(releaseVerifiedTerminalBindings(state, projectItems, [terminalStatus]), []);
-  assert.equal(state.boundItems.length, 1);
-  state.fullContextPlannedRevision = state.fullContextRequestedRevision;
-  assert.deepEqual(releaseVerifiedTerminalBindings(state, projectItems, [terminalStatus]), ['PVTI_DONE']);
+  assert.deepEqual(releaseRemoteTerminalBindings(state, projectItems, [terminalStatus]), ['PVTI_DONE']);
   assert.equal(state.boundItems.length, 0);
 });
 
-test('verified submission releases only the matching completion intent', () => {
+test('remote terminal release discards only that item from an attempted multi-item transaction', () => {
+  const terminalStatus = fixtureStatus('terminal');
+  const activeStatus = fixtureStatus('active');
+  const state = newStateForTest();
+  bindItem(state, { itemId: 'PVTI_DONE', title: 'Done task' });
+  bindItem(state, { itemId: 'PVTI_ACTIVE', title: 'Active task' });
+  state.pendingPlan = {
+    plan: { updates: [
+      { itemId: 'PVTI_DONE', summary: 'Do not write.' },
+      { itemId: 'PVTI_ACTIVE', summary: 'Keep this write.' }
+    ] },
+    operations: [
+      { key: 'done-op', itemId: 'PVTI_DONE' },
+      { key: 'active-op', itemId: 'PVTI_ACTIVE' }
+    ],
+    evidenceFacts: [
+      { itemId: 'PVTI_DONE', factId: 'done-fact', text: 'Done.' },
+      { itemId: 'PVTI_ACTIVE', factId: 'active-fact', text: 'Active.' }
+    ],
+    evidenceRevisions: { PVTI_DONE: 1, PVTI_ACTIVE: 2 },
+    intentRevisions: { PVTI_DONE: 3, PVTI_ACTIVE: 4 },
+    satisfiedStatusIntents: [
+      { itemId: 'PVTI_DONE' }, { itemId: 'PVTI_ACTIVE' }
+    ],
+    submissionStatus: 'unverified',
+    attempts: [{ attemptId: 'attempt-1', operationKeys: ['done-op', 'active-op'] }],
+    lastReconciliation: { confirmed: [], retryable: ['active-op'], conflicts: ['done-op'] },
+    conflictLoggedAt: '2026-08-30T00:00:00.000Z'
+  };
+
+  const released = releaseRemoteTerminalBindings(state, [
+    { itemId: 'PVTI_DONE', status: terminalStatus },
+    { itemId: 'PVTI_ACTIVE', status: activeStatus }
+  ], [terminalStatus]);
+
+  assert.deepEqual(released, ['PVTI_DONE']);
+  assert.deepEqual(state.pendingPlan.plan.updates.map(update => update.itemId), ['PVTI_ACTIVE']);
+  assert.deepEqual(state.pendingPlan.operations.map(operation => operation.key), ['active-op']);
+  assert.deepEqual(state.pendingPlan.attempts[0].operationKeys, ['active-op']);
+  assert.deepEqual(state.pendingPlan.lastReconciliation, {
+    confirmed: [], retryable: ['active-op'], conflicts: []
+  });
+  assert.deepEqual(state.pendingPlan.evidenceRevisions, { PVTI_ACTIVE: 2 });
+  assert.deepEqual(state.pendingPlan.intentRevisions, { PVTI_ACTIVE: 4 });
+});
+
+test('submission confirmation waits for authoritative remote terminal status before release', () => {
   const terminalStatus = fixtureStatus('terminal');
   const reviewStatus = fixtureStatus('review');
   const state = newStateForTest();
@@ -520,8 +563,13 @@ test('verified submission releases only the matching completion intent', () => {
     }]
   });
 
-  completeSubmission(state, { verifiedTerminalItemIds: new Set(['PVTI_DONE']) });
+  completeSubmission(state);
 
+  assert.deepEqual(state.boundItems.map(item => item.itemId), ['PVTI_DONE', 'PVTI_REVIEW']);
+  releaseRemoteTerminalBindings(state, [
+    { itemId: 'PVTI_DONE', status: terminalStatus },
+    { itemId: 'PVTI_REVIEW', status: reviewStatus }
+  ], [terminalStatus]);
   assert.deepEqual(state.boundItems.map(item => item.itemId), ['PVTI_REVIEW']);
   assert.equal(state.boundItems[0].statusIntent.targetStatus, reviewStatus);
 });

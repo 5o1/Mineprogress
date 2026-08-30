@@ -68,6 +68,18 @@ test('static plan validation permits only generated status transitions', () => {
   assert.match(report.errors.join(' '), new RegExp(STATUS.terminal, 'u'));
 });
 
+test('static plan validation rejects every write to a remote terminal item', () => {
+  const report = validatePlan({
+    updates: [{ itemId: 'PVTI_1', summary: 'Late edit.' }]
+  }, {
+    ...options,
+    boundItems: [{ itemId: 'PVTI_1', status: STATUS.terminal, contentLanguage: 'en' }],
+    terminalStatuses: [STATUS.terminal]
+  });
+  assert.equal(report.valid, false);
+  assert.match(report.errors.join(' '), /remote Project status is terminal/u);
+});
+
 test('durable completion intent requires the terminal status and Issue closure operation', () => {
   const completionOptions = {
     ...options,

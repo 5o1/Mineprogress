@@ -19,8 +19,8 @@ retains state for a later resume, and no runtime file is written to the reposito
 Codex exposes one explicit Skill per operation: `$mineprogress:init`, `$mineprogress:create`,
 `$mineprogress:bind`, `$mineprogress:unbind`, `$mineprogress:update`, `$mineprogress:check`, and
 `$mineprogress:status`. The plugin does not register a custom slash command. Creation binds its new
-item immediately. `check` returns `suggestedAdd` and `suggestedRemove` but never changes the candidate
-list. Before suggesting changes, it refreshes remote Project statuses and synchronizes the plugin's
+item immediately. `check` returns `suggestedAdd` and `suggestedRemove`; it also releases bindings
+whose remote status is already terminal. Before suggesting changes, it refreshes remote Project statuses and synchronizes the plugin's
 private default, terminal, and semantic-role configuration. A changed status set triggers bounded
 rule generation; the script stores rules only after validating exact names and reachability, while
 `status` renders the cached policy without network access. Mutating commands consume a short-lived
@@ -37,11 +37,13 @@ use the language marker directly and cite only links materially related to the b
 workspace remote is also stored as structured `primaryRepository` binding metadata.
 
 Plain `unbind` changes only the thread candidate list. Explicit `unbind --delete` closes linked
-Issue content, deletes the Project item, and then removes the local binding. Status updates also
-close Issues on configured terminal statuses and reopen them on non-terminal statuses. Archiving a
-Project item does not change Issue state.
-After GitHub verifies both a terminal Project status and linked Issue closure, Mineprogress releases
-that item from the thread automatically. Interrupted or unverified submissions keep the binding.
+Issue content, deletes a non-terminal Project item, and then removes the local binding. A remote
+terminal status is authoritative: Mineprogress closes an open linked Issue, discards every queued
+operation for that item, and releases the binding without requiring a local completion intent,
+backfill checkpoint, or Mineprogress-authored status transaction. Terminal Project items reject
+all later status, summary, body, comment, repository-reference, and deletion operations. If Issue
+closure fails, the binding remains available for a later automatic retry. Archiving alone does not
+change Issue state.
 
 ## Automatic update
 
@@ -117,8 +119,10 @@ unverified submission and continues automatically without a user command; later 
 additional recovery opportunity. The plugin treats `transcript_path` as opaque because Codex does
 not guarantee its on-disk format.
 
-`SessionEnd` performs no model work. It records an attempt and submits the latest reviewed plan as
-one batched GraphQL mutation, but treats the result as unverified and never removes the queue entry.
+`SessionEnd` performs no model work. It first reads the remote Project and discards terminal-item
+operations, closing linked Issues before releasing those bindings. It then records an attempt and
+submits the remaining reviewed plan as one batched GraphQL mutation, but treats the result as
+unverified and never removes the queue entry.
 On resume, Mineprogress reads Project fields and content bodies, and searches paginated Issue
 comments for a stable hidden operation marker. Target values confirm success, unchanged baseline
 values are safe to retry, and any third value is an external-edit conflict that is not overwritten.

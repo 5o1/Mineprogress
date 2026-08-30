@@ -316,7 +316,7 @@ test('private Project with public repository creates a draft through projectItem
   assert.equal(calls.filter(query => query.includes('updateProjectV2ItemFieldValue')).length, 1);
 });
 
-test('terminal and active status updates synchronize linked Issue state', async () => {
+test('active items may enter terminal status but terminal items reject further operations', async () => {
   const project = {
     id: 'PVT_1',
     fields: projectPage().user.projectV2.fields,
@@ -340,8 +340,7 @@ test('terminal and active status updates synchronize linked Issue state', async 
   project.normalizedItems[0].contentState = 'CLOSED';
   project.normalizedItems[0].status = STATUS.terminal;
   const reopening = prepareUpdateOperations(config, project, { updates: [{ itemId: 'PVTI_1', status: STATUS.queued }] });
-  assert.deepEqual(reopening.operations.map(operation => operation.kind), ['status', 'issueState']);
-  assert.equal(reopening.operations[1].expected, 'OPEN');
+  assert.deepEqual(reopening.operations, []);
 });
 
 test('explicit Project item deletion closes its Issue first', async () => {

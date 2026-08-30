@@ -67,3 +67,60 @@ test('explicit unbind deletion closes an Issue before deleting its Project item'
   assert.deepEqual(result.deletion, { itemId: 'PVTI_1', projectItemDeleted: true, issueClosed: true });
   assert.deepEqual((await readState(dataDir, 'session-1')).boundItems, []);
 });
+
+test('explicit deletion refuses to delete a terminal Project item and only closes its Issue', async t => {
+  const statuses = statusFixture();
+  const dataDir = await fs.mkdtemp(path.join(os.tmpdir(), 'mineprogress-terminal-delete-'));
+  t.after(() => fs.rm(dataDir, { recursive: true, force: true }));
+  await saveConfig(path.join(dataDir, 'config.json'), createConfig({
+    owner: 'octocat', ownerType: 'user', projectNumber: 1,
+    kanban: { defaultStatus: statuses.queued, terminalStatuses: [statuses.terminal] }
+  }));
+  const { state } = await openSession(dataDir, 'session-terminal-delete');
+  bindItem(state, { itemId: 'PVTI_1', title: 'Task', contentId: 'I_1', contentType: 'issue' });
+  authorizeCommand(state, 'unbind', 'turn-1');
+  await writeState(dataDir, state);
+
+  const previousToken = process.env.GITHUB_TOKEN;
+  const previousDisableGh = process.env.MINEPROGRESS_DISABLE_GH_AUTH;
+  const previousFetch = globalThis.fetch;
+  process.env.GITHUB_TOKEN = 'test-token';
+  process.env.MINEPROGRESS_DISABLE_GH_AUTH = '1';
+  const mutations = [];
+  globalThis.fetch = async (_url, request) => {
+    const { query } = JSON.parse(request.body);
+    const data = query.includes('query($login') ? { user: { projectV2: {
+      id: 'PVT_1', title: 'Tasks', public: false, repositories: { totalCount: 0, nodes: [] },
+      fields: { nodes: [{ id: 'STATUS', name: 'Status', options: [
+        { id: 'QUEUED', name: statuses.queued }, { id: 'TERMINAL', name: statuses.terminal }
+      ] }] },
+      items: { pageInfo: { hasNextPage: false, endCursor: null }, nodes: [{
+        id: 'PVTI_1', isArchived: false,
+        content: { __typename: 'Issue', id: 'I_1', title: 'Task', body: '', state: 'OPEN' },
+        fieldValues: { nodes: [{ name: statuses.terminal, optionId: 'TERMINAL', field: { id: 'STATUS', name: 'Status' } }] }
+      }] }
+    } } } : query.includes('updateIssue') ? (() => {
+      mutations.push('close');
+      return { updateIssue: { issue: { id: 'I_1', state: 'CLOSED' } } };
+    })() : (() => {
+      mutations.push('unexpected');
+      throw new Error('Terminal Project item deletion must be rejected.');
+    })();
+    return { ok: true, status: 200, json: async () => ({ data }) };
+  };
+  t.after(() => {
+    globalThis.fetch = previousFetch;
+    if (previousToken === undefined) delete process.env.GITHUB_TOKEN; else process.env.GITHUB_TOKEN = previousToken;
+    if (previousDisableGh === undefined) delete process.env.MINEPROGRESS_DISABLE_GH_AUTH; else process.env.MINEPROGRESS_DISABLE_GH_AUTH = previousDisableGh;
+  });
+
+  const result = await run([
+    'unbind', 'PVTI_1', '--delete',
+    '--session', 'session-terminal-delete', '--data-dir', dataDir
+  ]);
+  assert.deepEqual(mutations, ['close']);
+  assert.equal(result.changed, true);
+  assert.equal(result.terminalStatus, statuses.terminal);
+  assert.deepEqual(result.deletion, { itemId: 'PVTI_1', projectItemDeleted: false, issueClosed: true });
+  assert.deepEqual((await readState(dataDir, 'session-terminal-delete')).boundItems, []);
+});

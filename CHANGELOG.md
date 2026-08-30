@@ -5,6 +5,12 @@ Notable user-visible changes are documented here. Entries follow
 
 ## [Unreleased]
 
+### Changed
+
+- Treat configured remote terminal Project statuses as authoritative: close an open linked Issue,
+  discard queued writes for that item, and release its thread binding. Terminal items reject later
+  plugin updates or deletion even when the status was changed manually outside Mineprogress.
+
 ## [0.6.1] - 2026-08-30
 
 ### Fixed

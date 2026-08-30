@@ -13,6 +13,7 @@ import {
 import { suggestBindings } from './check.mjs';
 import {
   applyPreparedOperations,
+  closeLinkedIssue,
   createTextField,
   createKanbanItem,
   deleteKanbanItem,
@@ -49,7 +50,7 @@ import {
   readState,
   recoverEvidencePausedUpdate,
   recoverExhaustedUpdate,
-  releaseVerifiedTerminalBindings,
+  releaseRemoteTerminalBindings,
   recordPreparedUpdate,
   recordReviewedUpdate,
   recordStatusIntent,
@@ -78,6 +79,34 @@ async function runtimeReferenceLinks(runtime) {
 
 function pluginConfig(dataDir, runtime) {
   return loadConfig(configPath(runtime.environment || {}, runtime.resourceRoot, dataDir));
+}
+
+async function synchronizeRemoteTerminalBindings(dataDir, sessionId, config, client, project) {
+  const current = await readState(dataDir, sessionId);
+  const boundIds = new Set((current?.boundItems || []).map(item => item.itemId));
+  const terminal = new Set(config.kanban.terminalStatuses || []);
+  const terminalItems = project.normalizedItems
+    .filter(item => boundIds.has(item.itemId) && terminal.has(item.status));
+  if (!terminalItems.length) {
+    return { released: [], closedIssues: [], remainingBindings: boundIds.size };
+  }
+  const closedIssues = [];
+  for (const item of terminalItems) {
+    if (await closeLinkedIssue(client, item)) closedIssues.push(item.itemId);
+  }
+  const released = await withSessionLock(dataDir, sessionId, async () => {
+    const latest = await readState(dataDir, sessionId);
+    if (!latest) return [];
+    const itemIds = releaseRemoteTerminalBindings(
+      latest,
+      terminalItems,
+      config.kanban.terminalStatuses
+    );
+    if (itemIds.length) await writeState(dataDir, latest);
+    return itemIds;
+  });
+  const latest = await readState(dataDir, sessionId);
+  return { released, closedIssues, remainingBindings: latest?.boundItems.length || 0 };
 }
 
 function statusRuleGeneration(config, availableStatuses, rules, reason = 'missing') {
@@ -349,6 +378,9 @@ async function bindCommand(dataDir, flags, positional, runtime) {
   const project = await readProject(config, await runtime.githubClient());
   const item = project.normalizedItems.find(candidate => candidate.itemId === itemId);
   if (!item) throw Object.assign(new Error('Item is not in the configured Project.'), { code: 'PROJECT_ITEM_NOT_FOUND' });
+  if (config.kanban.terminalStatuses.includes(item.status)) {
+    throw Object.assign(new Error(`Item is already in terminal status ${item.status} and cannot be bound.`), { code: 'PROJECT_ITEM_TERMINAL' });
+  }
   const primaryRepository = primaryRepositoryFromLinks(await runtimeReferenceLinks(runtime), item.title);
   const changed = await withSessionLock(dataDir, sessionId, async () => {
     const state = await readState(dataDir, sessionId);
@@ -373,6 +405,23 @@ async function unbindCommand(dataDir, flags, positional, runtime) {
     const config = await pluginConfig(dataDir, runtime);
     const client = await runtime.githubClient();
     const project = await readProject(config, client);
+    const item = project.normalizedItems.find(candidate => candidate.itemId === itemId);
+    if (item && config.kanban.terminalStatuses.includes(item.status)) {
+      const issueClosed = await closeLinkedIssue(client, item);
+      const synchronized = await synchronizeRemoteTerminalBindings(dataDir, sessionId, config, client, project);
+      await withSessionLock(dataDir, sessionId, async () => {
+        const state = await readState(dataDir, sessionId);
+        const consumeAuthorization = requireCommandAuthorization(state, 'unbind');
+        consumeAuthorization();
+        await writeState(dataDir, state);
+      });
+      return {
+        changed: synchronized.released.includes(itemId),
+        itemId,
+        terminalStatus: item.status,
+        deletion: { itemId, projectItemDeleted: false, issueClosed }
+      };
+    }
     const binding = initial.boundItems.find(item => item.itemId === itemId) || {};
     deletion = await deleteKanbanItem(client, project, itemId, binding);
   }
@@ -389,7 +438,7 @@ async function unbindCommand(dataDir, flags, positional, runtime) {
 
 async function checkCommand(dataDir, flags, runtime) {
   const sessionId = requiredSession(flags, runtime);
-  const state = await readState(dataDir, sessionId) || { boundItems: [] };
+  let state = await readState(dataDir, sessionId) || { boundItems: [] };
   let config = await pluginConfig(dataDir, runtime);
   const previousMetadata = await readProjectMetadata(dataDir, config);
   const client = await runtime.githubClient();
@@ -403,6 +452,14 @@ async function checkCommand(dataDir, flags, runtime) {
   if (synchronization.changes.length) {
     await saveConfig(configPath(runtime.environment || {}, runtime.resourceRoot, dataDir), config);
   }
+  const terminalSynchronization = await synchronizeRemoteTerminalBindings(
+    dataDir,
+    sessionId,
+    config,
+    client,
+    project
+  );
+  state = await readState(dataDir, sessionId) || { boundItems: [] };
   let statusRules = reusableStatusRules(
     previousMetadata,
     availableStatuses,
@@ -442,6 +499,8 @@ async function checkCommand(dataDir, flags, runtime) {
     availableStatuses,
     defaultStatus: config.kanban.defaultStatus || null,
     terminalStatuses: config.kanban.terminalStatuses,
+    releasedTerminalBindings: terminalSynchronization.released,
+    closedTerminalIssues: terminalSynchronization.closedIssues,
     statusRoles: config.kanban.statusRoles,
     configurationChanges: synchronization.changes,
     statusRuleGeneration: statusRuleGeneration(
@@ -466,6 +525,30 @@ async function checkCommand(dataDir, flags, runtime) {
 }
 
 async function prepareUpdate(dataDir, sessionId, runtime, { reconcileBindings = false } = {}) {
+  let prefetchedConfig = null;
+  let prefetchedClient = null;
+  let prefetchedProject = null;
+  const initial = await readState(dataDir, sessionId);
+  if (reconcileBindings && initial?.boundItems.length) {
+    prefetchedConfig = await pluginConfig(dataDir, runtime);
+    prefetchedClient = await runtime.githubClient();
+    prefetchedProject = await readProject(prefetchedConfig, prefetchedClient);
+    const synchronized = await synchronizeRemoteTerminalBindings(
+      dataDir,
+      sessionId,
+      prefetchedConfig,
+      prefetchedClient,
+      prefetchedProject
+    );
+    if (synchronized.released.length && !synchronized.remainingBindings) {
+      return {
+        outcome: 'paused_no_bindings',
+        reason: 'Remote terminal bindings were released after linked Issues were synchronized.',
+        released: synchronized.released,
+        closedIssues: synchronized.closedIssues
+      };
+    }
+  }
   const setup = await withSessionLock(dataDir, sessionId, async () => {
     const { state } = await openSession(dataDir, sessionId);
     if (state.pendingPlan?.attempts?.length) {
@@ -475,9 +558,6 @@ async function prepareUpdate(dataDir, sessionId, runtime, { reconcileBindings = 
     if (!run) {
       if (state.pendingPlan) {
         return { result: { outcome: 'pending_submission', updates: state.pendingPlan.plan.updates.length, throughSequence: state.pendingPlan.throughSequence } };
-      }
-      if (reconcileBindings && state.boundItems.length) {
-        return { verifyTerminalBindings: state.boundItems.map(item => item.itemId) };
       }
       return { result: { outcome: 'noop', reason: 'No context exists after the last planned update.' } };
     }
@@ -503,26 +583,6 @@ async function prepareUpdate(dataDir, sessionId, runtime, { reconcileBindings = 
     };
   });
   if (setup.result) return setup.result;
-  if (setup.verifyTerminalBindings) {
-    const config = await pluginConfig(dataDir, runtime);
-    const project = await readProject(config, await runtime.githubClient());
-    const candidates = new Set(setup.verifyTerminalBindings);
-    const released = await withSessionLock(dataDir, sessionId, async () => {
-      const latest = await readState(dataDir, sessionId);
-      if (!latest || latest.pendingPlan || latest.activeUpdate) return [];
-      const scopedItems = project.normalizedItems.filter(item => candidates.has(item.itemId));
-      const itemIds = releaseVerifiedTerminalBindings(
-        latest,
-        scopedItems,
-        config.kanban.terminalStatuses
-      );
-      if (itemIds.length) await writeState(dataDir, latest);
-      return itemIds;
-    });
-    return released.length
-      ? { outcome: 'paused_no_bindings', reason: 'Verified terminal bindings were released.', released }
-      : { outcome: 'noop', reason: 'No terminal binding is ready for release.' };
-  }
   if (setup.recoveryErrorId) {
     await resolveError(
       dataDir,
@@ -538,7 +598,7 @@ async function prepareUpdate(dataDir, sessionId, runtime, { reconcileBindings = 
       }
     });
   }
-  const config = await pluginConfig(dataDir, runtime);
+  const config = prefetchedConfig || await pluginConfig(dataDir, runtime);
   let state = await withSessionLock(dataDir, sessionId, async () => {
     const latest = await readState(dataDir, sessionId);
     let changed = false;
@@ -556,8 +616,28 @@ async function prepareUpdate(dataDir, sessionId, runtime, { reconcileBindings = 
   let projectSnapshot = state?.activeUpdate?.projectSnapshot || null;
   let workspaceReferenceLinks = state?.activeUpdate?.referenceLinks || [];
   if (!projectSnapshot) {
-    const client = await runtime.githubClient();
-    const project = await readProject(config, client);
+    const client = prefetchedClient || await runtime.githubClient();
+    const project = prefetchedProject || await readProject(config, client);
+    if (!prefetchedProject) {
+      const synchronized = await synchronizeRemoteTerminalBindings(
+        dataDir,
+        sessionId,
+        config,
+        client,
+        project
+      );
+      if (synchronized.released.length) {
+        if (!synchronized.remainingBindings) {
+          return {
+            outcome: 'paused_no_bindings',
+            reason: 'Remote terminal bindings were released after linked Issues were synchronized.',
+            released: synchronized.released,
+            closedIssues: synchronized.closedIssues
+          };
+        }
+        return prepareUpdate(dataDir, sessionId, runtime, { reconcileBindings: false });
+      }
+    }
     const availableStatuses = projectStatusOptions(project, config).map(option => option.name);
     workspaceReferenceLinks = await runtimeReferenceLinks(runtime);
     const previousMetadata = await readProjectMetadata(dataDir, config);
@@ -595,15 +675,6 @@ async function prepareUpdate(dataDir, sessionId, runtime, { reconcileBindings = 
       for (const [itemId, facts] of recoveredEvidence) {
         mergeEvidenceFacts(latest, itemId, facts, { recoveredAt });
       }
-      releaseVerifiedTerminalBindings(
-        latest,
-        project.normalizedItems,
-        config.kanban.terminalStatuses
-      );
-      if (!latest.boundItems.length) {
-        await writeState(dataDir, latest);
-        return latest;
-      }
       if (!statusRules) {
         await writeState(dataDir, latest);
         return latest;
@@ -620,7 +691,7 @@ async function prepareUpdate(dataDir, sessionId, runtime, { reconcileBindings = 
       return latest;
     });
     if (!state?.boundItems.length) {
-      return { outcome: 'paused_no_bindings', reason: 'All terminal bindings were verified and released.' };
+      return { outcome: 'paused_no_bindings', reason: 'All remote terminal bindings were released.' };
     }
     if (!statusRules) {
       return {
@@ -944,40 +1015,60 @@ async function sendPendingOperations(dataDir, sessionId, operations, runtime) {
 }
 
 export async function reconcilePendingUpdate(dataDir, sessionId, { retry = true } = {}, runtime) {
-  const state = await readState(dataDir, sessionId);
+  let state = await readState(dataDir, sessionId);
   if (!state) return { submitted: false, reason: 'Thread cache does not exist.' };
   if (!state.pendingPlan) return { submitted: false, reason: 'No reviewed plan is pending.' };
-  if (!state.pendingPlan.attempts?.length && !pendingPlanIsCurrent(state)) {
-    return { submitted: false, stale: true, queueRetained: true, reason: 'The reviewed plan is stale and must be regenerated before submission.' };
-  }
   requireRuntime(runtime);
   const config = await pluginConfig(dataDir, runtime);
   const client = await runtime.githubClient();
   let project = await readProject(config, client);
+  const released = [];
+  const firstSynchronization = await synchronizeRemoteTerminalBindings(dataDir, sessionId, config, client, project);
+  released.push(...firstSynchronization.released);
+  state = await readState(dataDir, sessionId);
+  if (!state?.pendingPlan) {
+    return {
+      submitted: false,
+      verified: true,
+      terminalBindingsReleased: released,
+      reason: 'Transactions for remote terminal items were discarded.'
+    };
+  }
+  if (!state.pendingPlan.attempts?.length && !pendingPlanIsCurrent(state)) {
+    return { submitted: false, stale: true, queueRetained: true, reason: 'The reviewed plan is stale and must be regenerated before submission.' };
+  }
   let report = await reconcilePreparedOperations(project, state.pendingPlan.operations, { client });
   if (retry && report.retryable.length) {
     await sendPendingOperations(dataDir, sessionId, report.retryable, runtime);
     project = await readProject(config, client);
+    const retrySynchronization = await synchronizeRemoteTerminalBindings(dataDir, sessionId, config, client, project);
+    released.push(...retrySynchronization.released);
+    state = await readState(dataDir, sessionId);
+    if (!state?.pendingPlan) {
+      return {
+        submitted: false,
+        verified: true,
+        terminalBindingsReleased: [...new Set(released)],
+        reason: 'Transactions for remote terminal items were discarded.'
+      };
+    }
     report = await reconcilePreparedOperations(project, state.pendingPlan.operations, { client });
   }
   if (!report.retryable.length && !report.conflicts.length) {
     const writeOperations = report.confirmed.length;
-    const projectItems = new Map(project.normalizedItems.map(item => [item.itemId, item]));
-    const verifiedTerminalItemIds = new Set((state.pendingPlan.satisfiedStatusIntents || [])
-      .filter(intent => {
-        if (!intent.unbindOnVerification || !config.kanban.terminalStatuses.includes(intent.targetStatus)) return false;
-        const item = projectItems.get(intent.itemId);
-        return item?.status === intent.targetStatus &&
-          (item.contentType !== 'issue' || item.contentState === 'CLOSED');
-      })
-      .map(intent => intent.itemId));
     await withSessionLock(dataDir, sessionId, async () => {
       const latest = await readState(dataDir, sessionId);
       if (!latest?.pendingPlan) return;
-      completeSubmission(latest, { verifiedTerminalItemIds });
+      completeSubmission(latest);
       await writeState(dataDir, latest);
     });
-    return { submitted: true, verified: true, writeOperations, checkpointAdvanced: true };
+    return {
+      submitted: true,
+      verified: true,
+      writeOperations,
+      checkpointAdvanced: true,
+      terminalBindingsReleased: [...new Set(released)]
+    };
   }
   const shouldLogConflict = await withSessionLock(dataDir, sessionId, async () => {
     const latest = await readState(dataDir, sessionId);
@@ -1011,15 +1102,31 @@ export async function reconcilePendingUpdate(dataDir, sessionId, { retry = true 
 }
 
 export async function submitPendingUpdate(dataDir, sessionId, { verify = true } = {}, runtime) {
-  const state = await readState(dataDir, sessionId);
+  let state = await readState(dataDir, sessionId);
   if (!state) return { submitted: false, reason: 'Thread cache does not exist.' };
   if (!state.pendingPlan) return { submitted: false, reason: 'No reviewed plan is pending.' };
-  if (!state.pendingPlan.attempts?.length && !pendingPlanIsCurrent(state)) {
-    return { submitted: false, stale: true, queueRetained: true, reason: 'The reviewed plan is stale and must be regenerated before submission.' };
+  if (state.pendingPlan.attempts?.length && verify) {
+    return reconcilePendingUpdate(dataDir, sessionId, {}, runtime);
+  }
+  requireRuntime(runtime);
+  const config = await pluginConfig(dataDir, runtime);
+  const client = await runtime.githubClient();
+  const project = await readProject(config, client);
+  const synchronization = await synchronizeRemoteTerminalBindings(dataDir, sessionId, config, client, project);
+  state = await readState(dataDir, sessionId);
+  if (!state?.pendingPlan) {
+    return {
+      submitted: false,
+      verified: true,
+      terminalBindingsReleased: synchronization.released,
+      reason: 'Transactions for remote terminal items were discarded.'
+    };
   }
   if (state.pendingPlan.attempts?.length) {
-    if (verify) return reconcilePendingUpdate(dataDir, sessionId, {}, runtime);
     return { submitted: false, verified: false, reason: 'An earlier submission is still unverified.', queueRetained: true };
+  }
+  if (!pendingPlanIsCurrent(state)) {
+    return { submitted: false, stale: true, queueRetained: true, reason: 'The reviewed plan is stale and must be regenerated before submission.' };
   }
   const result = await sendPendingOperations(dataDir, sessionId, state.pendingPlan.operations, runtime);
   if (!verify) {

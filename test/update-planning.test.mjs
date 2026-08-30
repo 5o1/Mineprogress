@@ -153,7 +153,7 @@ test('prepare automatically recovers an exhausted batch after later journal evid
   assert.deepEqual(await unresolvedErrors(dataDir, { sessionId: state.sessionId }), []);
 });
 
-test('prepare releases an already verified terminal binding without model work', async t => {
+test('prepare releases a remote terminal binding without model work', async t => {
   const queuedStatus = STATUS.queued;
   const terminalStatus = STATUS.terminal;
   const dataDir = await fs.mkdtemp(path.join(os.tmpdir(), 'mineprogress-terminal-release-'));
@@ -394,8 +394,8 @@ test('reviewed incremental plan is stored before one later GitHub submission', a
   const finalState = await readState(dataDir, 'session-1');
   assert.equal(finalState.pendingPlan, null);
   assert.equal(finalState.boundItems.length, 0);
-  assert.equal(finalState.lastSuccessfulUpdate.sequence, 3);
-  assert.equal(projectReads, 4);
+  assert.equal(finalState.lastSuccessfulUpdate, null);
+  assert.equal(projectReads, 5);
 });
 
 test('update preparation recovers verified managed comments into item evidence once', async t => {
@@ -501,6 +501,23 @@ test('submission response persistence preserves journal and intent written durin
   const released = new Promise(resolve => { releaseMutation = resolve; });
   globalThis.fetch = async (_url, request) => {
     const { query } = JSON.parse(request.body);
+    if (query.includes('query($login')) {
+      return {
+        ok: true,
+        status: 200,
+        json: async () => ({ data: { user: { projectV2: {
+          id: 'PVT_1', title: 'Tasks', public: false,
+          repositories: { totalCount: 0, nodes: [] },
+          fields: { nodes: [{ id: 'STATUS', name: 'Status', options: [
+            { id: 'QUEUED', name: STATUS.queued }, { id: 'TERMINAL', name: STATUS.terminal }
+          ] }] },
+          items: { pageInfo: { hasNextPage: false, endCursor: null }, nodes: [{
+            id: 'PVTI_1', isArchived: false, content: { title: 'Parser' },
+            fieldValues: { nodes: [{ name: STATUS.queued, optionId: 'QUEUED', field: { id: 'STATUS', name: 'Status' } }] }
+          }] }
+        } } } })
+      };
+    }
     assert.match(query, /operation0:updateProjectV2ItemFieldValue/u);
     mutationStarted();
     await released;
