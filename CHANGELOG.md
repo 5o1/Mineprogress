@@ -24,6 +24,8 @@ Notable user-visible changes are documented here. Entries follow
   keeping the backend API explicit.
 - Reused canonical boolean-flag parsing when attributing command failures to thread-scoped logs.
 - Enforced every required, typed, and closed field in host adapter manifests during validation.
+- Reconciled attempted shutdown submissions from the next asynchronous Stop worker so continued
+  threads do not leave newer journal entries indefinitely blocked while waiting for a resume event.
 
 ## [0.5.0] - 2026-08-30
 

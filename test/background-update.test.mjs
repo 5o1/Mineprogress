@@ -97,3 +97,45 @@ test('background worker skips review for an accepted incremental no-op', async t
   assert.equal(modelCalls, 1);
   assert.deepEqual(calls, ['update prepare', 'update stage']);
 });
+
+test('background worker reconciles an attempted submission before planning newer context', async t => {
+  const dataDir = await fs.mkdtemp(path.join(os.tmpdir(), 'mineprogress-background-reconcile-'));
+  t.after(() => fs.rm(dataDir, { recursive: true, force: true }));
+  const calls = [];
+  let prepareCount = 0;
+  const runCommand = async argv => {
+    calls.push(argv.slice(0, 2).join(' '));
+    if (argv[1] === 'prepare') {
+      prepareCount++;
+      return prepareCount === 1
+        ? { outcome: 'submission_unverified' }
+        : { outcome: 'noop', reason: 'No context remains.' };
+    }
+    if (argv[1] === 'submit') return { submitted: true, verified: true };
+    throw new Error(`Unexpected command: ${argv.join(' ')}`);
+  };
+
+  const result = await runBackgroundUpdate(dataDir, 'session-1', {
+    runCommand,
+    invokeModel: async () => { throw new Error('No model call expected.'); }
+  });
+  assert.equal(result.outcome, 'noop');
+  assert.deepEqual(calls, ['update prepare', 'update submit', 'update prepare']);
+});
+
+test('background worker retains an attempted submission when reconciliation is inconclusive', async t => {
+  const dataDir = await fs.mkdtemp(path.join(os.tmpdir(), 'mineprogress-background-unverified-'));
+  t.after(() => fs.rm(dataDir, { recursive: true, force: true }));
+  const calls = [];
+  const runCommand = async argv => {
+    calls.push(argv.slice(0, 2).join(' '));
+    if (argv[1] === 'prepare') return { outcome: 'submission_unverified' };
+    if (argv[1] === 'submit') return { submitted: false, verified: false, conflicts: 1 };
+    throw new Error(`Unexpected command: ${argv.join(' ')}`);
+  };
+
+  const result = await runBackgroundUpdate(dataDir, 'session-1', { runCommand });
+  assert.equal(result.outcome, 'submission_unverified');
+  assert.equal(result.reconciliation.conflicts, 1);
+  assert.deepEqual(calls, ['update prepare', 'update submit']);
+});

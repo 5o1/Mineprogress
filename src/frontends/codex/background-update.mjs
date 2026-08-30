@@ -105,7 +105,12 @@ export async function runBackgroundUpdate(dataDir, sessionId, {
         if (await settleBackgroundRequest(dataDir, sessionId)) continue;
         return prepared;
       }
-      if (['submission_unverified', 'exhausted'].includes(prepared.outcome)) return prepared;
+      if (prepared.outcome === 'submission_unverified') {
+        const reconciliation = await runCommand(['update', 'submit', '--session', sessionId, '--data-dir', dataDir]);
+        if (reconciliation.submitted && reconciliation.verified) continue;
+        return { outcome: 'submission_unverified', reconciliation };
+      }
+      if (prepared.outcome === 'exhausted') return prepared;
       if (prepared.outcome === 'resume_apply') {
         const resumed = await runCommand(['update', 'apply', '--session', sessionId, '--data-dir', dataDir]);
         if (await settleBackgroundRequest(dataDir, sessionId)) continue;
@@ -193,7 +198,7 @@ export async function runHook() {
   const sessionId = input.session_id || input.sessionId;
   if (!sessionId) return;
   const state = await withSessionLock(dataDir, sessionId, () => readState(dataDir, sessionId));
-  if (!state?.boundItems.length || state.pendingPlan?.attempts?.length) return;
+  if (!state?.boundItems.length) return;
   await runBackgroundUpdate(dataDir, sessionId);
 }
 

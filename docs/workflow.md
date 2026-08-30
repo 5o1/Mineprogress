@@ -75,7 +75,9 @@ one batched GraphQL mutation, but treats the result as unverified and never remo
 On resume, Mineprogress reads Project fields and content bodies, and searches paginated Issue
 comments for a stable hidden operation marker. Target values confirm success, unchanged baseline
 values are safe to retry, and any third value is an external-edit conflict that is not overwritten.
-Only complete read-back confirmation removes the plan and advances the submission checkpoint.
+Only complete read-back confirmation removes the plan and advances the submission checkpoint. Resume
+performs this check first; if the same process continues receiving turns after SessionEnd, the next
+asynchronous Stop worker also reconciles the attempted submission before planning newer context.
 Manual `$mineprogress:update` submits and verifies immediately.
 
 An approved no-op advances only the planning checkpoint. Token, permission, network, configuration,
