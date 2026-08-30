@@ -67,6 +67,8 @@ if ('statusValues' in example) errors.push('Kanban statuses must be discovered, 
 if ([readme, configuration, workflow, development].some(document => /[\u3400-\u9fff]/u.test(document))) {
   errors.push('README and docs must remain in English.');
 }
+const changelog = await read('CHANGELOG.md');
+if (!/^## \[Unreleased\]$/m.test(changelog)) errors.push('CHANGELOG.md must retain an Unreleased section.');
 if (!releaseWorkflow.includes('workflow_run:') ||
     !releaseWorkflow.includes("github.event.workflow_run.conclusion == 'success'") ||
     !releaseWorkflow.includes('github.event.workflow_run.head_sha') ||
@@ -84,6 +86,7 @@ const requiredFiles = [
   'docs/configuration.md',
   'docs/workflow.md',
   'docs/development.md',
+  'CHANGELOG.md',
   'LICENSE',
   'scripts/mineprogress.mjs',
   'scripts/background-update.mjs',

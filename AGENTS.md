@@ -2,7 +2,7 @@
 
 ## Project Structure & Module Organization
 
-Mineprogress is a dependency-free Node.js Codex plugin for thread-bound GitHub Projects Kanban work.
+Mineprogress is a dependency-free Node.js Codex plugin for thread-bound GitHub Projects work.
 
 - `scripts/mineprogress.mjs`: command entry point for init, create, bind, update, check, and status.
 - `scripts/hook.mjs`: SessionStart, UserPromptSubmit, Stop, and SessionEnd adapter.
@@ -16,8 +16,8 @@ Runtime state belongs under Codex `PLUGIN_DATA`, never in a working repository.
 
 ## Build, Test, and Development Commands
 
-Use Node.js 22 or newer. There is no build step or npm runtime dependency; GitHub CLI login is the
-preferred authentication source, with environment tokens as fallback.
+Use Node.js 22+. There is no build step or npm runtime dependency. GitHub CLI login is preferred;
+environment tokens are fallback authentication.
 
 - `npm test`: run all native `node:test` suites.
 - `npm run validate`: check versions, plugin structure, required resources, and committed secrets.
@@ -27,16 +27,15 @@ preferred authentication source, with environment tokens as fallback.
 ## Coding Style & Naming Conventions
 
 Use ES modules, two-space indentation, semicolons, and single quotes. Prefer small named functions
-with injected network clients. Use `camelCase` for values/functions, `UPPER_SNAKE_CASE` for GraphQL
-constants, and kebab-case `.mjs` filenames. Keep runtime code dependency-free unless a dependency has
-a clear maintenance benefit. No formatter or linter is configured; match surrounding code.
+and injected network clients. Use `camelCase` for values/functions, `UPPER_SNAKE_CASE` for GraphQL
+constants, and kebab-case `.mjs` filenames. Match nearby code.
 
 ## Testing Guidelines
 
 Use `node:test` and `node:assert/strict`. Name files `<feature>.test.mjs`. Keep tests deterministic:
 mock GraphQL responses and use temporary `PLUGIN_DATA` directories instead of live GitHub calls.
-Cover new state transitions, failure classifications, and public-write routing. Run `npm run ci`
-before submitting; no numeric coverage threshold is configured.
+Cover new state transitions, failure classes, and public-write routing. Run `npm run ci`; no numeric
+coverage threshold is configured.
 
 ## Commit & Pull Request Guidelines
 
@@ -44,9 +43,9 @@ History uses short Conventional Commit subjects such as `feat: add guided projec
 commits focused. Feature and fix commits must not change package versions. Never infer permission to
 bump a version from stability, CI success, or release readiness; only do so after the repository
 owner explicitly requests a version bump. Then use a separate `chore: bump to vX.Y.Z` commit that
-changes only the version fields in `.codex-plugin/plugin.json` and `package.json`. Pull requests
-should explain behavior and configuration changes, link relevant issues, and include `npm run ci`
-results. Include output or screenshots only when user-visible rendering changes.
+changes only the version fields in `.codex-plugin/plugin.json` and `package.json`. Before that bump,
+finalize a dated, substantive `CHANGELOG.md` entry in its own commit and obtain successful CI. Pull
+requests should explain behavior/configuration changes, link issues, and include CI results.
 
 ## Security & Release
 

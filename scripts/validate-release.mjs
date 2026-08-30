@@ -20,7 +20,18 @@ function isGreaterVersion(next, previous) {
   return next.some((part, index) => part > previous[index] && next.slice(0, index).every((value, prior) => value === previous[prior]));
 }
 
-export function validateReleasePolicy({ tag, manifest, packageJson, subject, changedFiles, previousManifest, previousPackageJson }) {
+function changelogEntry(changelog, version) {
+  const escaped = version.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  const heading = new RegExp(`^## \\[${escaped}\\] - (\\d{4}-\\d{2}-\\d{2})$`, 'm');
+  const match = heading.exec(changelog || '');
+  if (!match) return null;
+  const bodyStart = match.index + match[0].length;
+  const nextHeading = (changelog || '').slice(bodyStart).search(/^## /m);
+  const body = (changelog || '').slice(bodyStart, nextHeading < 0 ? undefined : bodyStart + nextHeading).trim();
+  return { date: match[1], body };
+}
+
+export function validateReleasePolicy({ tag, manifest, packageJson, subject, changedFiles, previousManifest, previousPackageJson, changelog }) {
   const errors = [];
   const version = manifest.version;
   if (!tag || tag !== `v${version}` || packageJson.version !== version) {
@@ -40,6 +51,13 @@ export function validateReleasePolicy({ tag, manifest, packageJson, subject, cha
       !isDeepStrictEqual(withoutVersion(packageJson), withoutVersion(previousPackageJson))) {
     errors.push('Release commit may change only the version fields.');
   }
+  const entry = changelogEntry(changelog, version);
+  if (!entry) {
+    errors.push(`CHANGELOG.md requires a dated ## [${version}] entry before the version bump.`);
+  } else if (!/^### (Added|Changed|Deprecated|Removed|Fixed|Security)$/m.test(entry.body) ||
+             !/^- .+/m.test(entry.body) || /\b(?:TODO|TBD|no changes)\b/i.test(entry.body)) {
+    errors.push(`CHANGELOG.md entry ${version} must contain a substantive categorized change list.`);
+  }
   return errors;
 }
 
@@ -48,9 +66,10 @@ async function main() {
   const tag = process.argv[2] || process.env.GITHUB_REF_NAME;
   const readJson = relative => fs.readFile(path.join(root, relative), 'utf8').then(JSON.parse);
   const git = args => execFileSync('git', args, { cwd: root, encoding: 'utf8' }).trim();
-  const [manifest, packageJson] = await Promise.all([
+  const [manifest, packageJson, changelog] = await Promise.all([
     readJson('.codex-plugin/plugin.json'),
-    readJson('package.json')
+    readJson('package.json'),
+    fs.readFile(path.join(root, 'CHANGELOG.md'), 'utf8')
   ]);
   const previousManifest = JSON.parse(git(['show', 'HEAD^:.codex-plugin/plugin.json']));
   const previousPackageJson = JSON.parse(git(['show', 'HEAD^:package.json']));
@@ -61,7 +80,8 @@ async function main() {
     subject: git(['log', '-1', '--pretty=%s', 'HEAD']),
     changedFiles: git(['diff', '--name-only', 'HEAD^', 'HEAD']).split(/\r?\n/u).filter(Boolean),
     previousManifest,
-    previousPackageJson
+    previousPackageJson,
+    changelog
   });
   if (errors.length) {
     for (const error of errors) console.error(`release: ${error}`);

@@ -6,6 +6,7 @@ const manifest = { name: 'mineprogress', version: '0.4.2', skills: './skills/' }
 const packageJson = { name: 'mineprogress', version: '0.4.2', type: 'module' };
 const previousManifest = { ...manifest, version: '0.4.1' };
 const previousPackageJson = { ...packageJson, version: '0.4.1' };
+const changelog = '# Changelog\n\n## [Unreleased]\n\n## [0.4.2] - 2026-08-30\n\n### Added\n\n- Background planning.\n';
 
 function validate(overrides = {}) {
   return validateReleasePolicy({
@@ -16,6 +17,7 @@ function validate(overrides = {}) {
     changedFiles: ['.codex-plugin/plugin.json', 'package.json'],
     previousManifest,
     previousPackageJson,
+    changelog,
     ...overrides
   });
 }
@@ -38,4 +40,10 @@ test('release policy requires the dedicated bump subject and a greater stable ve
 test('release policy rejects non-version metadata changes', () => {
   const errors = validate({ manifest: { ...manifest, description: 'Unexpected release edit' } });
   assert.equal(errors.some(error => error.includes('version fields')), true);
+});
+
+test('release policy requires a substantive target-version changelog entry', () => {
+  assert.equal(validate({ changelog: '# Changelog\n\n## [Unreleased]\n' }).some(error => error.includes('dated')), true);
+  const placeholder = '# Changelog\n\n## [0.4.2] - 2026-08-30\n\n### Added\n\n- TBD\n';
+  assert.equal(validate({ changelog: placeholder }).some(error => error.includes('substantive')), true);
 });
