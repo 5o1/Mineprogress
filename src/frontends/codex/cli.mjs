@@ -4,6 +4,7 @@ import { classifyError, logError } from '../../backend/errors.mjs';
 import { readState } from '../../backend/state.mjs';
 import {
   parseProjectUrl,
+  parseCommandArgs,
   reconcilePendingUpdate as reconcileBackendUpdate,
   resolveInitializationCreationRepository,
   runBackend,
@@ -29,16 +30,6 @@ export async function submitPendingUpdate(dataDir, sessionId, options = {}, runt
   return submitBackendUpdate(dataDir, sessionId, options, runtime);
 }
 
-function parseFlags(argv) {
-  const flags = {};
-  for (let index = 0; index < argv.length; index++) {
-    if (!argv[index].startsWith('--')) continue;
-    flags[argv[index].slice(2)] = argv[index + 1];
-    index++;
-  }
-  return flags;
-}
-
 export async function main(argv = process.argv.slice(2)) {
   try {
     const result = await run(argv);
@@ -51,7 +42,7 @@ export async function main(argv = process.argv.slice(2)) {
       return;
     }
     try {
-      const flags = parseFlags(argv.slice(1));
+      const { flags } = parseCommandArgs(argv.slice(1));
       const dataDir = flags['data-dir'] ? path.resolve(flags['data-dir']) : resolveCodexDataDir(argv);
       const sessionId = flags.session || process.env.MINEPROGRESS_SESSION_ID || null;
       const state = sessionId ? await readState(dataDir, sessionId).catch(() => null) : null;

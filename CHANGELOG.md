@@ -18,6 +18,13 @@ Notable user-visible changes are documented here. Entries follow
 - Added architecture tests that prevent host payload fields, command syntax, or adapter imports from
   entering backend source.
 
+### Fixed
+
+- Preserved the legacy no-argument configuration loader at the compatibility entrypoint while
+  keeping the backend API explicit.
+- Reused canonical boolean-flag parsing when attributing command failures to thread-scoped logs.
+- Enforced every required, typed, and closed field in host adapter manifests during validation.
+
 ## [0.5.0] - 2026-08-30
 
 ### Added

@@ -4,7 +4,7 @@ import os from 'node:os';
 import path from 'node:path';
 import test from 'node:test';
 import { fileURLToPath } from 'node:url';
-import { executeBackend } from '../src/backend/index.mjs';
+import { executeBackend, parseCommandArgs } from '../src/backend/index.mjs';
 import { createConfig, saveConfig } from '../src/backend/config.mjs';
 import { assertHostEvent, validateHostManifest } from '../src/host/contract.mjs';
 
@@ -43,6 +43,45 @@ test('host adapter manifests share one versioned contract', async () => {
       assert.equal(manifest.entrypoints, undefined, 'planned adapters must not claim executable support');
     }
   }
+});
+
+test('host manifest validation enforces required and closed schema fields', () => {
+  const valid = {
+    schemaVersion: 1,
+    id: 'example-host',
+    displayName: 'Example Host',
+    status: 'planned',
+    capabilities: {
+      lifecycleEvents: ['session-start'],
+      explicitCommands: true,
+      backgroundExecution: false,
+      threadHistory: false,
+      structuredModelOutput: true,
+      writableDataDirectory: true
+    }
+  };
+  assert.deepEqual(validateHostManifest(valid), []);
+  assert.ok(validateHostManifest({ ...valid, displayName: undefined }).includes('displayName must be a non-empty string'));
+  assert.ok(validateHostManifest({ ...valid, unexpected: true }).includes('manifest contains unsupported property unexpected'));
+  assert.ok(validateHostManifest({ ...valid, entrypoints: { commands: 1 } }).includes('entrypoints.commands must be a string'));
+  assert.ok(validateHostManifest({ ...valid, resources: { unknown: 'value' } }).includes('resources contains unsupported property unknown'));
+  const capabilityErrors = validateHostManifest({
+    ...valid,
+    capabilities: { ...valid.capabilities, lifecycleEvents: 'session-start', extra: true }
+  });
+  assert.ok(capabilityErrors.includes('capabilities.lifecycleEvents must be an array'));
+  assert.ok(capabilityErrors.includes('capabilities contains unsupported property extra'));
+  assert.ok(validateHostManifest({
+    ...valid,
+    capabilities: { ...valid.capabilities, explicitCommands: undefined }
+  }).includes('capabilities.explicitCommands must be boolean'));
+});
+
+test('shared command parsing preserves flags after boolean options', () => {
+  assert.deepEqual(parseCommandArgs(['PVTI_1', '--delete', '--session', 'session-x']), {
+    positional: ['PVTI_1'],
+    flags: { delete: true, session: 'session-x' }
+  });
 });
 
 test('normalized host events reject raw or incomplete platform payloads', () => {

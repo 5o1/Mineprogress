@@ -47,7 +47,7 @@ function pluginConfig(dataDir, runtime) {
   return loadConfig(configPath(runtime.environment || {}, runtime.resourceRoot, dataDir));
 }
 
-function parseArgs(argv) {
+export function parseCommandArgs(argv) {
   const positional = [];
   const flags = {};
   for (let index = 0; index < argv.length; index++) {
@@ -751,6 +751,6 @@ export async function executeBackend({ command, positional = [], options = {} },
 
 export async function runBackend(argv, runtime) {
   const command = argv[0];
-  const { positional, flags } = parseArgs(argv.slice(1));
+  const { positional, flags } = parseCommandArgs(argv.slice(1));
   return executeBackend({ command, positional, options: flags }, runtime);
 }
