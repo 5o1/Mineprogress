@@ -1,6 +1,6 @@
 {
   "name": "mineprogress",
-  "version": "0.5.0",
+  "version": "0.6.0",
   "description": "Thread-scoped GitHub Projects Kanban updates for Codex.",
   "author": {
     "name": "5o1",
