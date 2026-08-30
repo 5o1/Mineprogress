@@ -19,3 +19,12 @@ Notable user-visible changes are documented here. Entries follow
 - Stop persists the turn locally and delegates model work to a non-blocking asynchronous Hook.
 - Project summaries remain concise while detailed progress is maintained in the item's body.
 - Unsubmitted legacy summary plans are replaced by a full structured-history backfill after upgrade.
+
+### Fixed
+
+- Incremental revisions must preserve every queued item, non-null field, pending comment, and
+  approved managed-history line until GitHub confirms submission.
+- Generator attempts, reviewer state, static-check results, and other transient worker metadata are
+  rejected before they can replace Project content.
+- Incompatible unsubmitted plans are discarded locally and scheduled for full-history regeneration;
+  plans with a prior submission attempt remain available for safe reconciliation.

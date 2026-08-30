@@ -1,5 +1,6 @@
 const ITEM_KEYS = new Set(['itemId', 'status', 'summary', 'body', 'comment']);
 const PLAN_KEYS = new Set(['updates']);
+const UPDATE_FIELDS = ['status', 'summary', 'body', 'comment'];
 
 export const MANAGED_BODY_START = '<!-- mineprogress:managed:start -->';
 export const MANAGED_BODY_END = '<!-- mineprogress:managed:end -->';
@@ -10,6 +11,17 @@ export function findSensitiveText(text) {
     ['absolute Windows path', /\b[A-Z]:\\[^\s]+/i],
     ['home path', /\/(?:Users|home)\/[^\s]+/],
     ['GitHub token', /\b(?:gh[opusr]_[A-Za-z0-9_]{20,}|github_pat_[A-Za-z0-9_]{20,})\b/]
+  ];
+  return checks.filter(([, expression]) => expression.test(text)).map(([label]) => label);
+}
+
+export function findControlPlaneNarration(text) {
+  const checks = [
+    ['generation attempt', /\bgeneration attempt\s+\d+\b/i],
+    ['review wait state', /\b(?:awaiting|pending)\s+(?:reviewer|review)(?:\s+approval)?\b/i],
+    ['review execution state', /\b(?:reviewer|generator)\s+(?:is\s+)?(?:running|pending|approved|rejected)\b/i],
+    ['static-check execution state', /\bstatic (?:checks?|validation)\s+(?:passed|failed|succeeded|is valid)\b/i],
+    ['update-run narration', /\bthis (?:generation|review|update)\s+(?:run|round|attempt)\b/i]
   ];
   return checks.filter(([, expression]) => expression.test(text)).map(([label]) => label);
 }
@@ -66,7 +78,51 @@ function validateOptionalText(value, prefix, maxCharacters, { historical = false
   if (typeof value !== 'string' || !value.trim()) return [`${prefix} must be non-empty text or null.`];
   if ([...value].length > maxCharacters) errors.push(`${prefix} exceeds ${maxCharacters} characters.`);
   for (const sensitive of findSensitiveText(value)) errors.push(`${prefix} contains ${sensitive}.`);
+  for (const narration of findControlPlaneNarration(value)) {
+    errors.push(`${prefix} contains transient Mineprogress control-plane narration (${narration}).`);
+  }
   if (historical) errors.push(...validateHistoricalProgress(value, prefix));
+  return errors;
+}
+
+function requiredPendingLines(body) {
+  const start = body.indexOf(MANAGED_BODY_START);
+  const end = body.indexOf(MANAGED_BODY_END, start + MANAGED_BODY_START.length);
+  if (start < 0 || end < 0) return [];
+  return body.slice(start + MANAGED_BODY_START.length, end)
+    .split(/\r?\n/u)
+    .map(line => line.trim())
+    .filter(Boolean);
+}
+
+function validatePendingPreservation(plan, existingPlan, allowedIds) {
+  const errors = [];
+  const proposed = new Map((plan.updates || []).map(update => [update.itemId, update]));
+  for (const existing of existingPlan?.updates || []) {
+    if (!allowedIds.has(existing.itemId)) continue;
+    const next = proposed.get(existing.itemId);
+    if (!next) {
+      errors.push(`updates must preserve pending item ${existing.itemId} until submission is confirmed.`);
+      continue;
+    }
+    for (const field of UPDATE_FIELDS) {
+      if (existing[field] !== undefined && existing[field] !== null &&
+          (next[field] === undefined || next[field] === null)) {
+        errors.push(`updates for ${existing.itemId} drop pending ${field}.`);
+      }
+    }
+    if (existing.comment && next.comment !== existing.comment) {
+      errors.push(`updates for ${existing.itemId} must preserve the pending comment verbatim.`);
+    }
+    if (existing.body && next.body) {
+      for (const line of requiredPendingLines(existing.body)) {
+        if (!next.body.includes(line)) {
+          errors.push(`updates for ${existing.itemId} drop approved managed-body content: ${line.slice(0, 80)}.`);
+          break;
+        }
+      }
+    }
+  }
   return errors;
 }
 
@@ -77,7 +133,8 @@ export function validatePlan(plan, {
   maxCharacters = 500,
   maxWords = 80,
   maxBodyCharacters = 60000,
-  maxCommentCharacters = 10000
+  maxCommentCharacters = 10000,
+  existingPlan = { updates: [] }
 }) {
   const errors = [];
   if (!plan || typeof plan !== 'object' || Array.isArray(plan)) return { valid: false, errors: ['Plan must be a JSON object.'] };
@@ -109,6 +166,9 @@ export function validatePlan(plan, {
       if ([...summary].length > maxCharacters) errors.push(`${prefix}.summary exceeds ${maxCharacters} characters.`);
       if (summary.trim().split(/\s+/).filter(Boolean).length > maxWords) errors.push(`${prefix}.summary exceeds ${maxWords} words.`);
       for (const sensitive of findSensitiveText(summary)) errors.push(`${prefix}.summary contains ${sensitive}.`);
+      for (const narration of findControlPlaneNarration(summary)) {
+        errors.push(`${prefix}.summary contains transient Mineprogress control-plane narration (${narration}).`);
+      }
     }
     errors.push(...validateOptionalText(update.body, `${prefix}.body`, maxBodyCharacters, { historical: true }));
     errors.push(...validateOptionalText(update.comment, `${prefix}.comment`, maxCommentCharacters));
@@ -121,6 +181,9 @@ export function validatePlan(plan, {
     if (update.comment && item?.contentType && !['issue', 'pullRequest'].includes(item.contentType)) {
       errors.push(`${prefix}.comment cannot be added to ${item.contentType} content.`);
     }
+  }
+  if (Array.isArray(plan.updates)) {
+    errors.push(...validatePendingPreservation(plan, existingPlan, allowedIds));
   }
   return { valid: errors.length === 0, errors };
 }

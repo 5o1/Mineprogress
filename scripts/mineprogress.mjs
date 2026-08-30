@@ -458,7 +458,8 @@ async function stageUpdate(dataDir, sessionId, flags) {
       maxCharacters: config.update.maxSummaryCharacters,
       maxWords: config.update.maxSummaryWords,
       maxBodyCharacters: config.update.maxBodyCharacters,
-      maxCommentCharacters: config.update.maxCommentCharacters
+      maxCommentCharacters: config.update.maxCommentCharacters,
+      existingPlan: state.pendingPlan?.plan || { updates: [] }
     });
     if (!report.valid) {
       state.activeUpdate.stagedPlan = null;

@@ -43,14 +43,30 @@ test('legacy unsubmitted plans are discarded and scheduled for structured backfi
   const dataDir = await temporaryData(t);
   const { state } = await openSession(dataDir, 'legacy');
   bindItem(state, { itemId: 'PVTI_1', title: 'Legacy item' });
-  state.planFormatVersion = 1;
+  state.planFormatVersion = 2;
   state.pendingPlan = { plan: { updates: [{ itemId: 'PVTI_1', summary: 'Old summary.' }] }, attempts: [] };
   await writeState(dataDir, state);
   const migrated = await readState(dataDir, 'legacy');
-  assert.equal(migrated.planFormatVersion, 2);
+  assert.equal(migrated.planFormatVersion, 3);
   assert.equal(migrated.pendingPlan, null);
   assert.ok(migrated.fullContextRequestedRevision > migrated.fullContextPlannedRevision);
   assert.equal(migrated.boundItems[0].backfillRevision, migrated.fullContextRequestedRevision);
+});
+
+test('legacy plans with an attempted submission remain recoverable during migration', async t => {
+  const dataDir = await temporaryData(t);
+  const { state } = await openSession(dataDir, 'attempted-legacy');
+  bindItem(state, { itemId: 'PVTI_1', title: 'Legacy item' });
+  state.planFormatVersion = 2;
+  state.pendingPlan = {
+    plan: { updates: [{ itemId: 'PVTI_1', summary: 'Possibly submitted.' }] },
+    attempts: [{ attemptId: 'attempt-1' }]
+  };
+  await writeState(dataDir, state);
+  const migrated = await readState(dataDir, 'attempted-legacy');
+  assert.equal(migrated.planFormatVersion, 3);
+  assert.notEqual(migrated.pendingPlan, null);
+  assert.ok(migrated.fullContextRequestedRevision > migrated.fullContextPlannedRevision);
 });
 
 test('planning and submission advance separate incremental checkpoints', async t => {

@@ -13,6 +13,8 @@ Return `itemId`, `status`, `summary`, `body`, and `comment`; use `null` when unc
   evidence contains a requirement but no result yet. Never use a `Current Progress` section.
 - Group related exchanges into meaningful phases rather than copying turns. Record accepted
   requirements and verified results; omit questions, abandoned ideas, tool output, and unrelated chat.
+- Omit the current generator/reviewer attempt, static-check result, worker state, and pending-plan
+  state. Those describe this update mechanism, not the bound item's progress.
 - Keep `summary` short enough for the Project board. Set `comment` to null for initial creation.
 - Do not invent dates, results, status, scope, or identity details. Use `planningDate` only for an
   undated current phase.

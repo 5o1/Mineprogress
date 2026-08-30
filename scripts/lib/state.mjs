@@ -4,7 +4,7 @@ import path from 'node:path';
 import process from 'node:process';
 
 const STATE_VERSION = 1;
-const PLAN_FORMAT_VERSION = 2;
+const PLAN_FORMAT_VERSION = 3;
 
 export function requireDataDir(env = process.env) {
   const dataDir = env.PLUGIN_DATA || env.MINEPROGRESS_DATA;

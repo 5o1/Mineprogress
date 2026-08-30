@@ -31,7 +31,9 @@ incrementally maintains one reviewed but unsubmitted plan:
    Later passes select only the journal after the last planning checkpoint and the approved plan.
 2. Generate one consolidated replacement plan, then locally check fields, bound IDs, actual
    statuses, size, managed-body structure, chronological history, preservation of manual body text,
-   and obvious personal information.
+   obvious personal information, and exclusion of generator/reviewer control metadata. An
+   incremental replacement must retain every queued field and approved managed-history line until
+   GitHub confirms the prior plan.
 3. Launch a separate ephemeral Codex reviewer process to detect context dumping, irrelevant
    expansion, static failures, unsupported claims, and author-identifying data. Its checklist is a
    separate runtime file rather than part of global Skill discovery.

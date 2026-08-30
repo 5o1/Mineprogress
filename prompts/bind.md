@@ -13,5 +13,7 @@ thread with the item's current Project fields and content. Return `itemId`, `sta
 - Consolidate only accepted requirements and verified results relevant to this item. Do not treat
   discussion, questions, diagnostics, or plugin mechanics as project progress without an explicit
   durable decision.
+- Omit the current generator/reviewer attempt, static-check result, worker state, and pending-plan
+  state. Those are transient control metadata, not item progress.
 - Preserve supported existing facts. Do not infer completion or rewrite the item's title.
 - Set `comment` to null for the initial binding backfill.
