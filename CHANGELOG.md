@@ -5,6 +5,8 @@ Notable user-visible changes are documented here. Entries follow
 
 ## [Unreleased]
 
+## [0.5.0] - 2026-08-30
+
 ### Added
 
 - Guided initialization from a GitHub Project URL, including linked-repository discovery.
