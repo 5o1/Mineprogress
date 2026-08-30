@@ -6,13 +6,15 @@ import path from 'node:path';
 import { run } from '../scripts/mineprogress.mjs';
 import { createConfig, saveConfig } from '../scripts/lib/config.mjs';
 import { authorizeCommand, bindItem, openSession, readState, writeState } from '../scripts/lib/state.mjs';
+import { statusFixture } from './status-fixture.mjs';
 
 test('explicit unbind deletion closes an Issue before deleting its Project item', async t => {
+  const statuses = statusFixture();
   const dataDir = await fs.mkdtemp(path.join(os.tmpdir(), 'mineprogress-delete-'));
   t.after(() => fs.rm(dataDir, { recursive: true, force: true }));
   await saveConfig(path.join(dataDir, 'config.json'), createConfig({
     owner: 'octocat', ownerType: 'user', projectNumber: 1,
-    kanban: { defaultStatus: 'Todo', terminalStatuses: ['Done'] }
+    kanban: { defaultStatus: statuses.queued, terminalStatuses: [statuses.terminal] }
   }));
   const { state } = await openSession(dataDir, 'session-1');
   bindItem(state, {

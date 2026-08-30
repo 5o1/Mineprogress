@@ -1,10 +1,13 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { validatePlan, validateReview } from '../scripts/lib/validation.mjs';
+import { statusFixture } from './status-fixture.mjs';
+
+const STATUS = statusFixture();
 
 const options = {
   boundItemIds: ['PVTI_1'],
-  allowedStatuses: ['Todo', 'In progress', 'Done', 'Blocked'],
+  allowedStatuses: [STATUS.queued, STATUS.active, STATUS.terminal, STATUS.blocked],
   maxCharacters: 100,
   maxWords: 20
 };
@@ -37,55 +40,57 @@ const progress = `## Progress Update — 2026-08-30 — Parser
 - Parser tests pass.`;
 
 test('static plan validation accepts a bound concise update and approved no-op', () => {
-  assert.equal(validatePlan({ updates: [{ itemId: 'PVTI_1', status: 'Done', summary: 'Parser implemented and tested.' }] }, options).valid, true);
+  assert.equal(validatePlan({ updates: [{ itemId: 'PVTI_1', status: STATUS.terminal, summary: 'Parser implemented and tested.' }] }, options).valid, true);
   assert.equal(validatePlan({ updates: [] }, options).valid, true);
 });
 
 test('static plan validation permits only generated status transitions', () => {
   const transitionOptions = {
     ...options,
-    boundItems: [{ itemId: 'PVTI_1', status: 'In progress' }],
+    boundItems: [{ itemId: 'PVTI_1', status: STATUS.active }],
     statusRules: {
       transitions: [{
-        from: 'In progress',
-        to: 'Blocked',
+        from: STATUS.active,
+        to: STATUS.blocked,
         when: 'A concrete external dependency prevents further implementation.',
         doNotApplyWhen: 'Do not use for ordinary questions or unfinished local work.'
       }]
     }
   };
   assert.equal(validatePlan({
-    updates: [{ itemId: 'PVTI_1', status: 'Blocked' }]
+    updates: [{ itemId: 'PVTI_1', status: STATUS.blocked }]
   }, transitionOptions).valid, true);
   const report = validatePlan({
-    updates: [{ itemId: 'PVTI_1', status: 'Done' }]
+    updates: [{ itemId: 'PVTI_1', status: STATUS.terminal }]
   }, transitionOptions);
   assert.equal(report.valid, false);
-  assert.match(report.errors.join(' '), /no generated transition rule from In progress to Done/);
+  assert.match(report.errors.join(' '), /no generated transition rule/);
+  assert.match(report.errors.join(' '), new RegExp(STATUS.terminal, 'u'));
 });
 
 test('durable completion intent requires the terminal status and Issue closure operation', () => {
   const completionOptions = {
     ...options,
     boundItems: [{
-      itemId: 'PVTI_1', status: 'In progress', contentType: 'issue', contentState: 'OPEN',
-      statusIntent: { targetStatus: 'Done', revision: 1 }
+      itemId: 'PVTI_1', status: STATUS.active, contentType: 'issue', contentState: 'OPEN',
+      statusIntent: { targetStatus: STATUS.terminal, revision: 1 }
     }],
-    terminalStatuses: ['Done'],
+    terminalStatuses: [STATUS.terminal],
     statusRules: { transitions: [{
-      from: 'In progress', to: 'Done',
+      from: STATUS.active, to: STATUS.terminal,
       when: 'Required implementation and verification evidence is complete.',
       doNotApplyWhen: 'Required work or verification evidence remains incomplete.'
     }] }
   };
   const omitted = validatePlan({ updates: [{ itemId: 'PVTI_1', summary: 'Work is complete.' }] }, completionOptions);
   assert.equal(omitted.valid, false);
-  assert.match(omitted.errors.join(' '), /must satisfy the durable status intent Done/u);
-  assert.equal(validatePlan({ updates: [{ itemId: 'PVTI_1', status: 'Done' }] }, completionOptions).valid, true);
+  assert.match(omitted.errors.join(' '), /must satisfy the durable status intent/u);
+  assert.match(omitted.errors.join(' '), new RegExp(STATUS.terminal, 'u'));
+  assert.equal(validatePlan({ updates: [{ itemId: 'PVTI_1', status: STATUS.terminal }] }, completionOptions).valid, true);
 
   const remotelyComplete = {
     ...completionOptions,
-    boundItems: [{ ...completionOptions.boundItems[0], status: 'Done', contentState: 'CLOSED' }]
+    boundItems: [{ ...completionOptions.boundItems[0], status: STATUS.terminal, contentState: 'CLOSED' }]
   };
   assert.equal(validatePlan({ updates: [] }, remotelyComplete).valid, true);
 });

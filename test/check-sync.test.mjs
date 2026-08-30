@@ -7,10 +7,12 @@ import { fileURLToPath } from 'node:url';
 import { executeBackend } from '../src/backend/application.mjs';
 import { bindItem, openSession, writeState } from '../src/backend/state.mjs';
 import { readProjectMetadata } from '../src/backend/metadata.mjs';
+import { statusFixture } from './status-fixture.mjs';
 
 const root = path.dirname(path.dirname(fileURLToPath(import.meta.url)));
 
 test('check synchronizes remote statuses into private config before suggesting bindings', async t => {
+  const staleStatuses = statusFixture();
   const dataDir = await fs.mkdtemp(path.join(os.tmpdir(), 'mineprogress-check-sync-'));
   t.after(() => fs.rm(dataDir, { recursive: true, force: true }));
   const configPath = path.join(dataDir, 'config.json');
@@ -18,10 +20,11 @@ test('check synchronizes remote statuses into private config before suggesting b
     owner: 'octocat', ownerType: 'user', projectNumber: 1,
     statusFieldName: 'Status', updateFieldName: 'Update',
     kanban: {
-      defaultStatus: 'Todo',
-      terminalStatuses: ['Done'],
+      defaultStatus: staleStatuses.queued,
+      terminalStatuses: [staleStatuses.terminal],
       statusRoles: {
-        queued: 'Todo', active: 'Doing', review: 'Review', blocked: '', completed: 'Done'
+        queued: staleStatuses.queued, active: staleStatuses.active,
+        review: staleStatuses.review, blocked: '', completed: staleStatuses.terminal
       }
     }
   }, null, 2)}\n`);
@@ -147,4 +150,50 @@ test('check synchronizes remote statuses into private config before suggesting b
     githubClient: async () => client
   }), { code: 'PROJECT_STATUS_FIELD_REQUIRED' });
   assert.equal(await fs.readFile(configPath, 'utf8'), beforeMissingField);
+});
+
+test('check caches opaque remote status names without a built-in vocabulary', async t => {
+  const dataDir = await fs.mkdtemp(path.join(os.tmpdir(), 'mineprogress-check-opaque-'));
+  t.after(() => fs.rm(dataDir, { recursive: true, force: true }));
+  const statuses = statusFixture();
+  const availableStatuses = [
+    statuses.queued, statuses.active, statuses.review, statuses.blocked, statuses.terminal
+  ];
+  const configPath = path.join(dataDir, 'config.json');
+  await fs.writeFile(configPath, `${JSON.stringify({
+    owner: 'octocat', ownerType: 'user', projectNumber: 1,
+    statusFieldName: 'Status', updateFieldName: 'Update',
+    kanban: {
+      defaultStatus: statuses.queued,
+      terminalStatuses: [statuses.terminal],
+      statusRoles: {
+        queued: statuses.queued, active: statuses.active, review: statuses.review,
+        blocked: statuses.blocked, completed: statuses.terminal
+      }
+    }
+  }, null, 2)}\n`);
+  const { state } = await openSession(dataDir, 'session-opaque');
+  bindItem(state, { itemId: 'BOUND', title: 'Bound item' });
+  await writeState(dataDir, state);
+  const client = async () => ({ user: { projectV2: {
+    id: 'PVT_OPAQUE', title: 'Opaque statuses', public: false,
+    repositories: { totalCount: 0, nodes: [] },
+    fields: { nodes: [{
+      id: 'STATUS', name: 'Status',
+      options: availableStatuses.map((name, index) => ({ id: `OPTION_${index}`, name }))
+    }] },
+    items: { pageInfo: { hasNextPage: false, endCursor: null }, nodes: [] }
+  } }, organization: null });
+
+  const result = await executeBackend({
+    command: 'check', options: { session: 'session-opaque' }
+  }, {
+    dataDir, resourceRoot: root, environment: {}, githubClient: async () => client
+  });
+
+  assert.deepEqual(result.availableStatuses, availableStatuses);
+  const saved = JSON.parse(await fs.readFile(configPath, 'utf8'));
+  const metadata = await readProjectMetadata(dataDir, saved);
+  assert.deepEqual(metadata.availableStatuses, availableStatuses);
+  assert.deepEqual(metadata.statusRoles, saved.kanban.statusRoles);
 });

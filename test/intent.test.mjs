@@ -6,15 +6,17 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { handleUserPrompt } from '../src/backend/lifecycle.mjs';
 import { bindItem, openSession, readState, writeState } from '../src/backend/state.mjs';
+import { statusFixture } from './status-fixture.mjs';
 
 const root = path.dirname(path.dirname(fileURLToPath(import.meta.url)));
 
 test('user prompts remain journal evidence until background semantic review', async t => {
+  const statuses = statusFixture();
   const dataDir = await fs.mkdtemp(path.join(os.tmpdir(), 'mineprogress-intent-'));
   t.after(() => fs.rm(dataDir, { recursive: true, force: true }));
   await fs.writeFile(path.join(dataDir, 'config.json'), JSON.stringify({
     owner: 'octocat', ownerType: 'user', projectNumber: 1,
-    kanban: { terminalStatuses: ['Done'], statusRoles: { completed: 'Done' } }
+    kanban: { terminalStatuses: [statuses.terminal], statusRoles: { completed: statuses.terminal } }
   }));
   const { state } = await openSession(dataDir, 'session-intent');
   bindItem(state, { itemId: 'PVTI_1', title: 'Parser' });

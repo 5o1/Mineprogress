@@ -6,6 +6,9 @@ import path from 'node:path';
 import { runBackgroundUpdate } from '../scripts/background-update.mjs';
 import { runHook } from '../src/frontends/codex/background-update.mjs';
 import { appendJournal, beginUpdate, bindItem, openSession, writeState } from '../src/backend/state.mjs';
+import { statusFixture } from './status-fixture.mjs';
+
+const STATUS = statusFixture();
 
 test('background worker generates and reviews a plan without submitting it', async t => {
   const dataDir = await fs.mkdtemp(path.join(os.tmpdir(), 'mineprogress-background-'));
@@ -17,10 +20,10 @@ test('background worker generates and reviews a plan without submitting it', asy
     outcome: 'generate_and_review',
     prompt: 'Update contract',
     existingPlan: { updates: [] },
-    availableStatuses: ['Todo', 'Done'],
+    availableStatuses: [STATUS.queued, STATUS.terminal],
     statusRules: { transitions: [{
-      from: 'Todo',
-      to: 'Done',
+      from: STATUS.queued,
+      to: STATUS.terminal,
       when: 'Required implementation and verification are complete.',
       doNotApplyWhen: 'Required work or verification remains incomplete.'
     }] },
@@ -38,7 +41,7 @@ test('background worker generates and reviews a plan without submitting it', asy
     if (argv[1] === 'prepare') return prepared;
     if (argv[1] === 'stage') {
       const plan = JSON.parse(await fs.readFile(argv[argv.indexOf('--plan') + 1], 'utf8'));
-      assert.deepEqual(plan, { updates: [{ itemId: 'PVTI_1', status: 'Done', summary: 'Parser completed.' }] });
+      assert.deepEqual(plan, { updates: [{ itemId: 'PVTI_1', status: STATUS.terminal, summary: 'Parser completed.' }] });
       return { accepted: true, staticReport: { valid: true, errors: [] }, plan };
     }
     if (argv[1] === 'apply') {
@@ -63,8 +66,8 @@ test('background worker generates and reviews a plan without submitting it', asy
     if ('updates' in input.schema.properties) {
       assert.deepEqual(input.schema.properties.updates.items.required, ['itemId', 'status', 'summary', 'body', 'comment']);
       assert.deepEqual(input.schema.properties.updates.items.properties.itemId.enum, ['PVTI_1']);
-      assert.deepEqual(input.schema.properties.updates.items.properties.status.enum, ['Todo', 'Done', null]);
-      return { updates: [{ itemId: 'PVTI_1', status: 'Done', summary: 'Parser completed.', body: null, comment: null }] };
+      assert.deepEqual(input.schema.properties.updates.items.properties.status.enum, [STATUS.queued, STATUS.terminal, null]);
+      return { updates: [{ itemId: 'PVTI_1', status: STATUS.terminal, summary: 'Parser completed.', body: null, comment: null }] };
     }
     assert.deepEqual(input.schema.required, ['decision', 'reason', 'journalCoverage']);
     return {
@@ -110,7 +113,7 @@ test('background generation receives static validation feedback on its next boun
           prompt: 'Update contract',
           previousAttemptErrors: prepareCount === 1 ? [] : ['updates[0].summary must use the item content language en.'],
           existingPlan: { updates: [] },
-          availableStatuses: ['Todo', 'Done'],
+          availableStatuses: [STATUS.queued, STATUS.terminal],
           statusRules: null,
           boundItems: [{ itemId: 'PVTI_1', title: 'Parser', contentLanguage: 'en' }],
           referenceLinks: [], context: [{ sequence: 1, kind: 'user', text: '完成。' }],
@@ -152,7 +155,7 @@ test('background worker pauses without retrying when review identifies missing e
     runCommand: async argv => {
       if (argv[1] === 'prepare') return {
         outcome: 'generate_and_review', prompt: 'Update contract', previousAttemptErrors: [],
-        existingPlan: { updates: [] }, availableStatuses: ['Todo'], statusRules: null,
+        existingPlan: { updates: [] }, availableStatuses: [STATUS.queued], statusRules: null,
         boundItems: [{ itemId: 'PVTI_1', contentLanguage: 'en' }], referenceLinks: [],
         context: [{ sequence: 1, kind: 'user', text: 'Implement the parser.' }],
         useThreadHistory: false, promptNames: ['update'], planningDate: '2026-08-30',
@@ -188,7 +191,7 @@ test('background worker reviews every journal entry before accepting an unchange
         outcome: 'generate_and_review',
         prompt: 'Update contract',
         existingPlan: { updates: [{ itemId: 'PVTI_1', summary: 'Queued work.' }] },
-        availableStatuses: ['Todo'],
+        availableStatuses: [STATUS.queued],
         boundItems: [{ itemId: 'PVTI_1', title: 'Parser' }],
         context: [{ sequence: 2, kind: 'user', text: 'Check.' }],
         useThreadHistory: false,
@@ -337,9 +340,9 @@ test('background worker generates missing status rules before a durable status i
           outcome: 'status_rules_required',
           model: { model: 'gpt-5.6-luna', reasoningEffort: 'medium' },
           generation: {
-            prompt: 'prompts/status-rules.md', availableStatuses: ['Todo', 'Done'],
-            defaultStatus: 'Todo', terminalStatuses: ['Done'],
-            statusRoles: { queued: 'Todo', active: '', review: '', blocked: '', completed: 'Done' }
+            prompt: 'prompts/status-rules.md', availableStatuses: [STATUS.queued, STATUS.terminal],
+            defaultStatus: STATUS.queued, terminalStatuses: [STATUS.terminal],
+            statusRoles: { queued: STATUS.queued, active: '', review: '', blocked: '', completed: STATUS.terminal }
           }
         } : { outcome: 'noop', reason: 'Rules are ready.' };
       }
@@ -353,11 +356,11 @@ test('background worker generates missing status rules before a durable status i
       assert.deepEqual(input.schema.required, ['statuses', 'transitions']);
       return {
         statuses: [
-          { name: 'Todo', enterWhen: 'Work is queued and has not started.', doNotEnterWhen: 'Work is actively being implemented.' },
-          { name: 'Done', enterWhen: 'All required work and verification are complete.', doNotEnterWhen: 'Required work or verification remains.' }
+          { name: STATUS.queued, enterWhen: 'Work is queued and has not started.', doNotEnterWhen: 'Work is actively being implemented.' },
+          { name: STATUS.terminal, enterWhen: 'All required work and verification are complete.', doNotEnterWhen: 'Required work or verification remains.' }
         ],
         transitions: [{
-          from: 'Todo', to: 'Done', when: 'All required work and verification are complete.',
+          from: STATUS.queued, to: STATUS.terminal, when: 'All required work and verification are complete.',
           doNotApplyWhen: 'Required work or verification remains incomplete.'
         }]
       };

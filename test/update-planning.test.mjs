@@ -20,13 +20,16 @@ import {
 } from '../scripts/lib/state.mjs';
 import { logError, unresolvedErrors } from '../scripts/lib/errors.mjs';
 import { storedStatusRules } from '../src/backend/status-rules.mjs';
+import { statusFixture } from './status-fixture.mjs';
+
+const STATUS = statusFixture();
 
 test('semantic review pauses a fixed batch when durable evidence is still missing', async t => {
   const dataDir = await fs.mkdtemp(path.join(os.tmpdir(), 'mineprogress-evidence-pause-'));
   t.after(() => fs.rm(dataDir, { recursive: true, force: true }));
   const config = createConfig({
     owner: 'octocat', ownerType: 'user', projectNumber: 1,
-    kanban: { defaultStatus: 'Todo', terminalStatuses: ['Done'] }
+    kanban: { defaultStatus: STATUS.queued, terminalStatuses: [STATUS.terminal] }
   });
   await saveConfig(path.join(dataDir, 'config.json'), config);
   const { state } = await openSession(dataDir, 'session-evidence-pause');
@@ -34,18 +37,18 @@ test('semantic review pauses a fixed batch when durable evidence is still missin
   const event = appendJournal(state, { kind: 'user', turnId: 'turn-1', text: 'Implement the parser.' });
   const update = beginUpdate(state, 'run-evidence-pause');
   recordPreparedUpdate(state, update.runId, { projectSnapshot: {
-    id: 'PVT_1', fields: [], availableStatuses: ['Todo', 'Done'],
+    id: 'PVT_1', fields: [], availableStatuses: [STATUS.queued, STATUS.terminal],
     statusRules: storedStatusRules({
-      statuses: ['Todo', 'Done'].map(name => ({
+      statuses: [STATUS.queued, STATUS.terminal].map(name => ({
         name, enterWhen: `Enter ${name} when its boundary is satisfied.`,
         doNotEnterWhen: `Do not enter ${name} when its boundary is unsatisfied.`
       })),
       transitions: [{
-        from: 'Todo', to: 'Done', when: 'Implementation and verification are complete.',
+        from: STATUS.queued, to: STATUS.terminal, when: 'Implementation and verification are complete.',
         doNotApplyWhen: 'Implementation or verification remains.'
       }]
-    }, ['Todo', 'Done']),
-    normalizedItems: [{ itemId: 'PVTI_1', title: 'Parser', status: 'Todo', contentType: 'issue' }]
+    }, [STATUS.queued, STATUS.terminal]),
+    normalizedItems: [{ itemId: 'PVTI_1', title: 'Parser', status: STATUS.queued, contentType: 'issue' }]
   } });
   recordStagedUpdate(state, update.runId, {
     plan: { updates: [] }, staticReport: { valid: true, errors: [] }
@@ -79,10 +82,10 @@ test('prepare automatically recovers an exhausted batch after later journal evid
   t.after(() => fs.rm(dataDir, { recursive: true, force: true }));
   const config = createConfig({
     owner: 'octocat', ownerType: 'user', projectNumber: 1,
-    kanban: { defaultStatus: 'Todo', terminalStatuses: ['Done'] }
+    kanban: { defaultStatus: STATUS.queued, terminalStatuses: [STATUS.terminal] }
   });
   await saveConfig(path.join(dataDir, 'config.json'), config);
-  const availableStatuses = ['Todo', 'Done'];
+  const availableStatuses = [STATUS.queued, STATUS.terminal];
   await updateProjectMetadata(dataDir, config, {
     availableStatuses,
     statusRules: storedStatusRules({
@@ -92,7 +95,7 @@ test('prepare automatically recovers an exhausted batch after later journal evid
         doNotEnterWhen: `Do not enter ${name} while its durable boundary is unsatisfied.`
       })),
       transitions: [{
-        from: 'Todo', to: 'Done',
+        from: STATUS.queued, to: STATUS.terminal,
         when: 'Required implementation and verification are complete.',
         doNotApplyWhen: 'Required implementation or verification remains.'
       }]
@@ -126,11 +129,11 @@ test('prepare automatically recovers an exhausted batch after later journal evid
       id: 'PVT_1', title: 'Tasks', public: false,
       repositories: { totalCount: 0, nodes: [] },
       fields: { nodes: [{ id: 'STATUS', name: 'Status', options: [
-        { id: 'TODO', name: 'Todo' }, { id: 'DONE', name: 'Done' }
+        { id: 'QUEUED', name: STATUS.queued }, { id: 'TERMINAL', name: STATUS.terminal }
       ] }] },
       items: { pageInfo: { hasNextPage: false, endCursor: null }, nodes: [{
         id: 'PVTI_1', isArchived: false, content: { title: 'Parser' },
-        fieldValues: { nodes: [{ name: 'Todo', optionId: 'TODO', field: { id: 'STATUS', name: 'Status' } }] }
+        fieldValues: { nodes: [{ name: STATUS.queued, optionId: 'QUEUED', field: { id: 'STATUS', name: 'Status' } }] }
       }] }
     } } } })
   });
@@ -151,11 +154,13 @@ test('prepare automatically recovers an exhausted batch after later journal evid
 });
 
 test('prepare releases an already verified terminal binding without model work', async t => {
+  const queuedStatus = STATUS.queued;
+  const terminalStatus = STATUS.terminal;
   const dataDir = await fs.mkdtemp(path.join(os.tmpdir(), 'mineprogress-terminal-release-'));
   t.after(() => fs.rm(dataDir, { recursive: true, force: true }));
   const config = createConfig({
     owner: 'octocat', ownerType: 'user', projectNumber: 1,
-    kanban: { defaultStatus: 'Todo', terminalStatuses: ['Done'] }
+    kanban: { defaultStatus: queuedStatus, terminalStatuses: [terminalStatus] }
   });
   await saveConfig(path.join(dataDir, 'config.json'), config);
   const { state } = await openSession(dataDir, 'session-terminal-release');
@@ -181,7 +186,7 @@ test('prepare releases an already verified terminal binding without model work',
         id: 'PVT_1', title: 'Tasks', public: false,
         repositories: { totalCount: 1, nodes: [{ nameWithOwner: 'octocat/todos', visibility: 'PUBLIC' }] },
         fields: { nodes: [{ id: 'STATUS', name: 'Status', options: [
-          { id: 'TODO', name: 'Todo' }, { id: 'DONE', name: 'Done' }
+          { id: 'QUEUE_OPTION', name: queuedStatus }, { id: 'TERMINAL_OPTION', name: terminalStatus }
         ] }] },
         items: { pageInfo: { hasNextPage: false, endCursor: null }, nodes: [{
           id: 'PVTI_1', isArchived: false,
@@ -191,7 +196,7 @@ test('prepare releases an already verified terminal binding without model work',
             repository: { nameWithOwner: 'octocat/todos' }
           },
           fieldValues: { nodes: [{
-            name: 'Done', optionId: 'DONE', field: { id: 'STATUS', name: 'Status' }
+            name: terminalStatus, optionId: 'TERMINAL_OPTION', field: { id: 'STATUS', name: 'Status' }
           }] }
         }] }
       } } } })
@@ -217,14 +222,16 @@ test('prepare releases an already verified terminal binding without model work',
 });
 
 test('reviewed incremental plan is stored before one later GitHub submission', async t => {
+  const queuedStatus = STATUS.queued;
+  const terminalStatus = STATUS.terminal;
   const dataDir = await fs.mkdtemp(path.join(os.tmpdir(), 'mineprogress-planning-'));
   t.after(() => fs.rm(dataDir, { recursive: true, force: true }));
   const config = createConfig({
     owner: 'octocat', ownerType: 'user', projectNumber: 1,
-    kanban: { defaultStatus: 'Todo', terminalStatuses: ['Done'] }
+    kanban: { defaultStatus: queuedStatus, terminalStatuses: [terminalStatus] }
   });
   await saveConfig(path.join(dataDir, 'config.json'), config);
-  const availableStatuses = ['Todo', 'Done'];
+  const availableStatuses = [queuedStatus, terminalStatus];
   await updateProjectMetadata(dataDir, config, {
     availableStatuses,
     statusRules: storedStatusRules({
@@ -234,8 +241,8 @@ test('reviewed incremental plan is stored before one later GitHub submission', a
         doNotEnterWhen: `Do not enter ${name} for questions, plans, or agent control activity.`
       })),
       transitions: [{
-        from: 'Todo',
-        to: 'Done',
+        from: queuedStatus,
+        to: terminalStatus,
         when: 'Move when required implementation and verification are demonstrably complete.',
         doNotApplyWhen: 'Do not move while required implementation or verification remains.'
       }]
@@ -249,7 +256,9 @@ test('reviewed incremental plan is stored before one later GitHub submission', a
 
   const planFile = path.join(dataDir, 'plan.json');
   const reviewFile = path.join(dataDir, 'review.json');
-  await fs.writeFile(planFile, JSON.stringify({ updates: [{ itemId: 'PVTI_1', status: 'Done', summary: 'Parser implemented and tested.' }] }));
+  await fs.writeFile(planFile, JSON.stringify({
+    updates: [{ itemId: 'PVTI_1', status: terminalStatus, summary: 'Parser implemented and tested.' }]
+  }));
   await fs.writeFile(reviewFile, JSON.stringify({
     decision: 'approve',
     reason: 'Relevant and concise.',
@@ -278,17 +287,17 @@ test('reviewed incremental plan is stored before one later GitHub submission', a
         repositories: { totalCount: 0, nodes: [] },
         fields: { nodes: [
           { id: 'STATUS', name: 'Status', options: [
-            { id: 'TODO', name: 'Todo' },
-            { id: 'DONE', name: 'Done' }
+            { id: 'QUEUE_OPTION', name: queuedStatus },
+            { id: 'TERMINAL_OPTION', name: terminalStatus }
           ] },
           { id: 'UPDATE', name: 'Update' }
         ] },
         items: { pageInfo: { hasNextPage: false, endCursor: null }, nodes: [{
           id: 'PVTI_1', isArchived: false, content: { title: 'Parser' }, fieldValues: { nodes: submissions >= 2 ? [
-            { name: 'Done', optionId: 'DONE', field: { id: 'STATUS', name: 'Status' } },
+            { name: terminalStatus, optionId: 'TERMINAL_OPTION', field: { id: 'STATUS', name: 'Status' } },
             { text: 'Parser implemented and tested.', field: { id: 'UPDATE', name: 'Update' } }
           ] : [
-            { name: 'Todo', optionId: 'TODO', field: { id: 'STATUS', name: 'Status' } }
+            { name: queuedStatus, optionId: 'QUEUE_OPTION', field: { id: 'STATUS', name: 'Status' } }
           ] }
         }] }
       } } };
@@ -336,11 +345,11 @@ test('reviewed incremental plan is stored before one later GitHub submission', a
   assert.equal(submissions, 0);
   const pendingState = await readState(dataDir, 'session-1');
   assert.equal(pendingState.pendingPlan.plan.updates.length, 1);
-  assert.equal(pendingState.boundItems[0].statusIntent.targetStatus, 'Done');
+  assert.equal(pendingState.boundItems[0].statusIntent.targetStatus, terminalStatus);
   assert.deepEqual(pendingState.pendingPlan.satisfiedStatusIntents, [{
-    itemId: 'PVTI_1', targetStatus: 'Done', revision: 1, unbindOnVerification: true
+    itemId: 'PVTI_1', targetStatus: terminalStatus, revision: 1, unbindOnVerification: true
   }]);
-  assert.equal(pendingState.pendingPlan.operations.find(operation => operation.kind === 'status').before, 'Todo');
+  assert.equal(pendingState.pendingPlan.operations.find(operation => operation.kind === 'status').before, queuedStatus);
   await updateProjectMetadata(dataDir, config, { availableStatuses, statusRules: prepared.statusRules });
 
   const originalPendingPlan = structuredClone(pendingState.pendingPlan);
@@ -394,10 +403,10 @@ test('update preparation recovers verified managed comments into item evidence o
   t.after(() => fs.rm(dataDir, { recursive: true, force: true }));
   const config = createConfig({
     owner: 'octocat', ownerType: 'user', projectNumber: 1,
-    kanban: { defaultStatus: 'Todo', terminalStatuses: ['Done'] }
+    kanban: { defaultStatus: STATUS.queued, terminalStatuses: [STATUS.terminal] }
   });
   await saveConfig(path.join(dataDir, 'config.json'), config);
-  const availableStatuses = ['Todo', 'Done'];
+  const availableStatuses = [STATUS.queued, STATUS.terminal];
   await updateProjectMetadata(dataDir, config, {
     availableStatuses,
     statusRules: storedStatusRules({
@@ -406,7 +415,7 @@ test('update preparation recovers verified managed comments into item evidence o
         doNotEnterWhen: `Do not enter ${name} while required evidence remains incomplete.`
       })),
       transitions: [{
-        from: 'Todo', to: 'Done', when: 'All required implementation and verification are complete.',
+        from: STATUS.queued, to: STATUS.terminal, when: 'All required implementation and verification are complete.',
         doNotApplyWhen: 'Required implementation or verification remains incomplete.'
       }]
     }, availableStatuses)
@@ -427,13 +436,13 @@ test('update preparation recovers verified managed comments into item evidence o
     const data = query.includes('query($login') ? { user: { projectV2: {
       id: 'PVT_1', title: 'Tasks', public: false, repositories: { totalCount: 0, nodes: [] },
       fields: { nodes: [
-        { id: 'STATUS', name: 'Status', options: [{ id: 'TODO', name: 'Todo' }, { id: 'DONE', name: 'Done' }] },
+        { id: 'STATUS', name: 'Status', options: [{ id: 'QUEUED', name: STATUS.queued }, { id: 'TERMINAL', name: STATUS.terminal }] },
         { id: 'UPDATE', name: 'Update' }
       ] },
       items: { pageInfo: { hasNextPage: false, endCursor: null }, nodes: [{
         id: 'PVTI_1', isArchived: false,
         content: { __typename: 'Issue', id: 'I_1', title: 'Parser', body: '', state: 'OPEN', url: 'https://example.test/issues/1' },
-        fieldValues: { nodes: [{ name: 'Todo', optionId: 'TODO', field: { id: 'STATUS', name: 'Status' } }] }
+        fieldValues: { nodes: [{ name: STATUS.queued, optionId: 'QUEUED', field: { id: 'STATUS', name: 'Status' } }] }
       }] }
     } } } : query.includes('node(id:$id)') ? (() => {
       commentReads++;
@@ -464,7 +473,7 @@ test('submission response persistence preserves journal and intent written durin
   t.after(() => fs.rm(dataDir, { recursive: true, force: true }));
   await saveConfig(path.join(dataDir, 'config.json'), createConfig({
     owner: 'octocat', ownerType: 'user', projectNumber: 1,
-    kanban: { defaultStatus: 'Todo', terminalStatuses: ['Done'] }
+    kanban: { defaultStatus: STATUS.queued, terminalStatuses: [STATUS.terminal] }
   }));
   const { state } = await openSession(dataDir, 'session-concurrency');
   bindItem(state, { itemId: 'PVTI_1', title: 'Parser' });
@@ -510,13 +519,13 @@ test('submission response persistence preserves journal and intent written durin
   await started;
   const duringRequest = await readState(dataDir, 'session-concurrency');
   const event = appendJournal(duringRequest, { kind: 'user', turnId: 'turn-2', text: '项目结束了。' });
-  recordStatusIntent(duringRequest, 'PVTI_1', 'Done', event.sequence, { role: 'completed' });
+  recordStatusIntent(duringRequest, 'PVTI_1', STATUS.terminal, event.sequence, { role: 'completed' });
   await writeState(dataDir, duringRequest);
   releaseMutation();
   await submitting;
 
   const restored = await readState(dataDir, 'session-concurrency');
   assert.deepEqual(restored.journal.map(entry => entry.text), ['项目结束了。']);
-  assert.equal(restored.boundItems[0].statusIntent.targetStatus, 'Done');
+  assert.equal(restored.boundItems[0].statusIntent.targetStatus, STATUS.terminal);
   assert.ok(restored.pendingPlan.attempts[0].responseReceivedAt);
 });

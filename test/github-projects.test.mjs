@@ -1,6 +1,9 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { applyPreparedOperations, applyUpdatePlan, createDraftItem, createKanbanItem, createTextField, deleteKanbanItem, makeClient, normalizeProjectItem, prepareUpdateOperations, readManagedDraftEvidence, readManagedEvidence, readProject, reconcilePreparedOperations, selectCreationRoute } from '../scripts/lib/github-projects.mjs';
+import { statusFixture } from './status-fixture.mjs';
+
+const STATUS = statusFixture();
 
 const config = {
   owner: 'octocat',
@@ -8,7 +11,7 @@ const config = {
   projectNumber: 1,
   statusFieldName: 'Status',
   updateFieldName: 'Update',
-  kanban: { defaultStatus: 'Todo', terminalStatuses: ['Done'] },
+  kanban: { defaultStatus: STATUS.queued, terminalStatuses: [STATUS.terminal] },
   creation: {
     repository: 'octocat/todos',
     projectVisibility: 'auto',
@@ -31,8 +34,8 @@ function projectPage({ hasNextPage = false, endCursor = null } = {}) {
         repositories: { totalCount: 1, nodes: [{ nameWithOwner: 'octocat/todos', visibility: 'PUBLIC' }] },
         fields: { nodes: [
           { id: 'status-field', name: 'Status', options: [
-            { id: 'todo-option', name: 'Todo' },
-            { id: 'done-option', name: 'Done' }
+            { id: 'queued-option', name: STATUS.queued },
+            { id: 'terminal-option', name: STATUS.terminal }
           ] },
           { id: 'update-field', name: 'Update' }
         ] },
@@ -54,13 +57,13 @@ test('project items normalize configured fields', () => {
     isArchived: false,
     content: { __typename: 'Issue', id: 'I_1', title: 'Ship', body: 'Existing body', state: 'OPEN', url: 'https://example.test/1' },
     fieldValues: { nodes: [
-      { name: 'In progress', field: { name: 'Status' } },
+      { name: STATUS.active, field: { name: 'Status' } },
       { text: 'Tests added', field: { name: 'Update' } }
     ] }
   }, config);
   assert.deepEqual(item, {
     itemId: 'PVTI_1', title: 'Ship', contentId: 'I_1', contentType: 'issue', contentState: 'OPEN', body: 'Existing body',
-    url: 'https://example.test/1', repository: null, archived: false, status: 'In progress', summary: 'Tests added'
+    url: 'https://example.test/1', repository: null, archived: false, status: STATUS.active, summary: 'Tests added'
   });
 });
 
@@ -105,7 +108,7 @@ test('approved plan applies status and summary with recoverable operation keys',
   const client = async query => query.includes('operation0:updateProjectV2ItemFieldValue')
     ? { operation0: { projectV2Item: { id: 'PVTI_1' } } }
     : projectPage();
-  const result = await applyUpdatePlan(config, client, { updates: [{ itemId: 'PVTI_1', status: 'Done', summary: 'Finished.' }] }, { onApplied: async key => applied.push(key) });
+  const result = await applyUpdatePlan(config, client, { updates: [{ itemId: 'PVTI_1', status: STATUS.terminal, summary: 'Finished.' }] }, { onApplied: async key => applied.push(key) });
   assert.equal(result.applied, 2);
   assert.equal(applied.length, 2);
 });
@@ -250,15 +253,15 @@ Background.
 
 test('resume reconciliation distinguishes confirmed, retryable, and conflicting operations', async () => {
   const project = { normalizedItems: [
-    { itemId: 'confirmed', status: 'Done', summary: null },
-    { itemId: 'retry', status: 'Todo', summary: null },
-    { itemId: 'conflict', status: 'Blocked', summary: null }
+    { itemId: 'confirmed', status: STATUS.terminal, summary: null },
+    { itemId: 'retry', status: STATUS.queued, summary: null },
+    { itemId: 'conflict', status: STATUS.blocked, summary: null }
   ] };
   const operation = (itemId, before, expected) => ({ key: itemId, kind: 'status', itemId, before, expected });
   const report = await reconcilePreparedOperations(project, [
-    operation('confirmed', 'Todo', 'Done'),
-    operation('retry', 'Todo', 'Done'),
-    operation('conflict', 'Todo', 'Done')
+    operation('confirmed', STATUS.queued, STATUS.terminal),
+    operation('retry', STATUS.queued, STATUS.terminal),
+    operation('conflict', STATUS.queued, STATUS.terminal)
   ]);
   assert.deepEqual(report.confirmed.map(candidate => candidate.key), ['confirmed']);
   assert.deepEqual(report.retryable.map(candidate => candidate.key), ['retry']);
@@ -290,8 +293,8 @@ test('public repository issue creation adds the issue to the Project', async () 
   assert.equal(item.kind, 'issue');
   assert.equal(item.itemId, 'PVTI_7');
   assert.equal(calls.some(query => query.includes('addProjectV2ItemById')), true);
-  assert.equal(item.defaultStatus, 'Todo');
-  assert.equal(inputs.find(input => input?.value?.singleSelectOptionId)?.value.singleSelectOptionId, 'todo-option');
+  assert.equal(item.defaultStatus, STATUS.queued);
+  assert.equal(inputs.find(input => input?.value?.singleSelectOptionId)?.value.singleSelectOptionId, 'queued-option');
   assert.equal(inputs.find(input => input?.repositoryId)?.body, 'Initial body');
 });
 
@@ -308,7 +311,7 @@ test('private Project with public repository creates a draft through projectItem
   const item = await createKanbanItem(config, client, 'Private task');
   assert.equal(item.kind, 'draft');
   assert.equal(item.itemId, 'PVTI_DRAFT');
-  assert.equal(item.defaultStatus, 'Todo');
+  assert.equal(item.defaultStatus, STATUS.queued);
   assert.match(calls.find(query => query.includes('addProjectV2DraftIssue')), /projectItem \{ id \}/);
   assert.equal(calls.filter(query => query.includes('updateProjectV2ItemFieldValue')).length, 1);
 });
@@ -319,10 +322,10 @@ test('terminal and active status updates synchronize linked Issue state', async 
     fields: projectPage().user.projectV2.fields,
     normalizedItems: [{
       itemId: 'PVTI_1', contentId: 'I_1', contentType: 'issue', contentState: 'OPEN',
-      status: 'Todo', summary: null, body: ''
+      status: STATUS.queued, summary: null, body: ''
     }]
   };
-  const closing = prepareUpdateOperations(config, project, { updates: [{ itemId: 'PVTI_1', status: 'Done' }] });
+  const closing = prepareUpdateOperations(config, project, { updates: [{ itemId: 'PVTI_1', status: STATUS.terminal }] });
   assert.deepEqual(closing.operations.map(operation => operation.kind), ['status', 'issueState']);
   assert.equal(closing.operations[1].expected, 'CLOSED');
   await applyPreparedOperations(async (query, variables) => {
@@ -335,8 +338,8 @@ test('terminal and active status updates synchronize linked Issue state', async 
     };
   }, project.id, closing.operations);
   project.normalizedItems[0].contentState = 'CLOSED';
-  project.normalizedItems[0].status = 'Done';
-  const reopening = prepareUpdateOperations(config, project, { updates: [{ itemId: 'PVTI_1', status: 'Todo' }] });
+  project.normalizedItems[0].status = STATUS.terminal;
+  const reopening = prepareUpdateOperations(config, project, { updates: [{ itemId: 'PVTI_1', status: STATUS.queued }] });
   assert.deepEqual(reopening.operations.map(operation => operation.kind), ['status', 'issueState']);
   assert.equal(reopening.operations[1].expected, 'OPEN');
 });

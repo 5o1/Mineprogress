@@ -15,11 +15,11 @@ import {
 } from '../scripts/lib/config.mjs';
 
 test('Kanban defaults prefer a starting status and detect conventional terminal statuses', () => {
-  const statuses = ['In progress', 'Todo', 'In review', 'Done'];
-  assert.equal(selectDefaultStatus(statuses), 'Todo');
-  assert.deepEqual(detectTerminalStatuses(statuses), ['Done']);
+  const statuses = ['Active', 'Backlog', 'QA', 'Completed'];
+  assert.equal(selectDefaultStatus(statuses), 'Backlog');
+  assert.deepEqual(detectTerminalStatuses(statuses), ['Completed']);
   assert.deepEqual(detectStatusRoles(statuses), {
-    queued: 'Todo', active: 'In progress', review: 'In review', blocked: '', completed: 'Done'
+    queued: 'Backlog', active: 'Active', review: 'QA', blocked: '', completed: 'Completed'
   });
   assert.equal(selectDefaultStatus(['Doing', 'Shipped']), 'Doing');
 });
@@ -27,10 +27,10 @@ test('Kanban defaults prefer a starting status and detect conventional terminal 
 test('Kanban synchronization preserves valid mappings and replaces missing remote statuses', () => {
   const current = createConfig({
     kanban: {
-      defaultStatus: 'Todo',
-      terminalStatuses: ['Done', 'Cancelled'],
+      defaultStatus: 'Planned',
+      terminalStatuses: ['Resolved', 'Cancelled'],
       statusRoles: {
-        queued: 'Todo', active: 'Doing', review: 'Review', blocked: '', completed: 'Done'
+        queued: 'Planned', active: 'Doing', review: 'Review', blocked: '', completed: 'Resolved'
       }
     }
   });
@@ -114,8 +114,8 @@ test('initialization writes config and global metadata without a preview phase',
         repositories: { totalCount: 1, nodes: [{ nameWithOwner: 'octocat/todos', visibility: 'PUBLIC' }] },
         fields: { nodes: [{ id: 'status', name: 'Status', options: [
           { id: 'doing', name: 'Doing' },
-          { id: 'todo', name: 'Todo' },
-          { id: 'done', name: 'Done' }
+          { id: 'backlog', name: 'Backlog' },
+          { id: 'completed', name: 'Completed' }
         ] }] },
         items: { pageInfo: { hasNextPage: false, endCursor: null }, nodes: [] }
       } }, organization: null };
@@ -145,12 +145,12 @@ test('initialization writes config and global metadata without a preview phase',
   assert.equal(saved.owner, 'octocat');
   assert.equal(saved.creation.repository, 'octocat/todos');
   assert.equal('defaultRepository' in saved, false);
-  assert.equal(saved.kanban.defaultStatus, 'Todo');
-  assert.deepEqual(saved.kanban.terminalStatuses, ['Done']);
+  assert.equal(saved.kanban.defaultStatus, 'Backlog');
+  assert.deepEqual(saved.kanban.terminalStatuses, ['Completed']);
   assert.deepEqual(saved.kanban.statusRoles, {
-    queued: 'Todo', active: 'Doing', review: '', blocked: '', completed: 'Done'
+    queued: 'Backlog', active: 'Doing', review: '', blocked: '', completed: 'Completed'
   });
-  assert.equal(result.defaultStatus, 'Todo');
+  assert.equal(result.defaultStatus, 'Backlog');
   assert.equal(result.defaultStatusSource, 'detected');
   assert.equal(result.creationRepository, 'octocat/todos');
   assert.equal(result.creationRepositorySource, 'explicit');
@@ -158,7 +158,7 @@ test('initialization writes config and global metadata without a preview phase',
   assert.equal(result.statusRuleGeneration.reason, 'initialization');
   assert.deepEqual(result.statusRuleGeneration.statusRoles, result.statusRoles);
   const metadata = await readProjectMetadata(dataDir, saved);
-  assert.deepEqual(metadata.availableStatuses, ['Doing', 'Todo', 'Done']);
+  assert.deepEqual(metadata.availableStatuses, ['Doing', 'Backlog', 'Completed']);
   assert.equal(metadata.statusRules, null);
   assert.equal(metadata.creationPolicy.route, 'draft');
 });

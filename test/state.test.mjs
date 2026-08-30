@@ -1,5 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import crypto from 'node:crypto';
 import fs from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
@@ -421,16 +422,18 @@ test('a review paused for evidence resumes only when later journal evidence exis
 });
 
 test('verified evidence and status intent revisions survive transaction interruption boundaries', () => {
+  const terminalStatus = fixtureStatus('terminal');
+  const laterStatus = fixtureStatus('later');
   const state = newStateForTest();
   bindItem(state, { itemId: 'PVTI_1', title: 'Parser', contentType: 'issue' });
   state.fullContextPlannedRevision = state.fullContextRequestedRevision;
   const event = appendJournal(state, {
     kind: 'user', turnId: 'turn-1', text: 'The parser implementation and verification are complete.'
   });
-  assert.equal(recordStatusIntent(state, 'PVTI_1', 'Done', event.sequence), true);
-  assert.equal(recordStatusIntent(state, 'PVTI_1', 'Done', event.sequence), false);
+  assert.equal(recordStatusIntent(state, 'PVTI_1', terminalStatus, event.sequence), true);
+  assert.equal(recordStatusIntent(state, 'PVTI_1', terminalStatus, event.sequence), false);
   const run = beginUpdate(state, 'evidence-run');
-  const plan = { updates: [{ itemId: 'PVTI_1', status: 'Done' }] };
+  const plan = { updates: [{ itemId: 'PVTI_1', status: terminalStatus }] };
   const review = approveRun(state, run, plan, [{
     sequence: event.sequence,
     disposition: 'included',
@@ -442,38 +445,40 @@ test('verified evidence and status intent revisions survive transaction interrup
     operations: [{ key: 'status-done', itemId: 'PVTI_1', kind: 'status' }]
   }, review, {
     satisfiedStatusIntents: [{
-      itemId: 'PVTI_1', targetStatus: 'Done', revision: 1, unbindOnVerification: true
+      itemId: 'PVTI_1', targetStatus: terminalStatus, revision: 1, unbindOnVerification: true
     }]
   });
   assert.equal(state.journal.length, 0);
   assert.equal(state.pendingPlan.evidenceFacts.length, 1);
-  assert.equal(state.pendingPlan.evidenceFacts[0].text, 'Status: Done');
+  assert.equal(state.pendingPlan.evidenceFacts[0].text, `Status: ${terminalStatus}`);
   assert.doesNotMatch(state.pendingPlan.evidenceFacts[0].text, /implementation and verification/u);
   assert.equal(pendingPlanIsCurrent(state), true);
 
-  assert.equal(recordStatusIntent(state, 'PVTI_1', 'Review', 2), true);
+  assert.equal(recordStatusIntent(state, 'PVTI_1', laterStatus, 2), true);
   assert.equal(state.boundItems[0].statusIntent.revision, 2);
   assert.equal(pendingPlanIsCurrent(state), false);
   completeSubmission(state);
   assert.equal(state.boundItems[0].evidenceLedger.facts.length, 1);
-  assert.equal(state.boundItems[0].statusIntent.targetStatus, 'Review');
+  assert.equal(state.boundItems[0].statusIntent.targetStatus, laterStatus);
   assert.equal(state.boundItems[0].statusIntentRevision, 2);
 });
 
 test('verified terminal release preserves unsettled and concurrently changed bindings', () => {
+  const terminalStatus = fixtureStatus('terminal');
+  const activeStatus = fixtureStatus('active');
   const state = newStateForTest();
   bindItem(state, { itemId: 'PVTI_DONE', title: 'Done issue', contentType: 'issue' });
   bindItem(state, { itemId: 'PVTI_OPEN', title: 'Open issue', contentType: 'issue' });
   bindItem(state, { itemId: 'PVTI_ACTIVE', title: 'Reopened task', contentType: 'issue' });
   state.fullContextPlannedRevision = state.fullContextRequestedRevision;
   appendJournal(state, { kind: 'user', turnId: 'turn-1', text: 'Keep active context.' });
-  recordStatusIntent(state, 'PVTI_ACTIVE', 'Review', 1, { role: 'review' });
+  recordStatusIntent(state, 'PVTI_ACTIVE', activeStatus, 1, { role: 'review' });
 
   const released = releaseVerifiedTerminalBindings(state, [
-    { itemId: 'PVTI_DONE', status: 'Done', contentType: 'issue', contentState: 'CLOSED' },
-    { itemId: 'PVTI_OPEN', status: 'Done', contentType: 'issue', contentState: 'OPEN' },
-    { itemId: 'PVTI_ACTIVE', status: 'Done', contentType: 'issue', contentState: 'CLOSED' }
-  ], ['Done']);
+    { itemId: 'PVTI_DONE', status: terminalStatus, contentType: 'issue', contentState: 'CLOSED' },
+    { itemId: 'PVTI_OPEN', status: terminalStatus, contentType: 'issue', contentState: 'OPEN' },
+    { itemId: 'PVTI_ACTIVE', status: terminalStatus, contentType: 'issue', contentState: 'CLOSED' }
+  ], [terminalStatus]);
 
   assert.deepEqual(released, ['PVTI_DONE']);
   assert.deepEqual(state.boundItems.map(item => item.itemId), ['PVTI_OPEN', 'PVTI_ACTIVE']);
@@ -481,81 +486,86 @@ test('verified terminal release preserves unsettled and concurrently changed bin
 });
 
 test('a newly bound terminal item remains bound until full-history backfill is planned', () => {
+  const terminalStatus = fixtureStatus('terminal');
   const state = newStateForTest();
   bindItem(state, { itemId: 'PVTI_DONE', title: 'Historical task', contentType: 'issue' });
   const projectItems = [{
-    itemId: 'PVTI_DONE', status: 'Done', contentType: 'issue', contentState: 'CLOSED'
+    itemId: 'PVTI_DONE', status: terminalStatus, contentType: 'issue', contentState: 'CLOSED'
   }];
 
-  assert.deepEqual(releaseVerifiedTerminalBindings(state, projectItems, ['Done']), []);
+  assert.deepEqual(releaseVerifiedTerminalBindings(state, projectItems, [terminalStatus]), []);
   assert.equal(state.boundItems.length, 1);
   state.fullContextPlannedRevision = state.fullContextRequestedRevision;
-  assert.deepEqual(releaseVerifiedTerminalBindings(state, projectItems, ['Done']), ['PVTI_DONE']);
+  assert.deepEqual(releaseVerifiedTerminalBindings(state, projectItems, [terminalStatus]), ['PVTI_DONE']);
   assert.equal(state.boundItems.length, 0);
 });
 
 test('verified submission releases only the matching completion intent', () => {
+  const terminalStatus = fixtureStatus('terminal');
+  const reviewStatus = fixtureStatus('review');
   const state = newStateForTest();
   bindItem(state, { itemId: 'PVTI_DONE', title: 'Completed task' });
   bindItem(state, { itemId: 'PVTI_REVIEW', title: 'Review task' });
-  recordStatusIntent(state, 'PVTI_DONE', 'Done', 1, { role: 'completed' });
-  recordStatusIntent(state, 'PVTI_REVIEW', 'Review', 1, { role: 'review' });
+  recordStatusIntent(state, 'PVTI_DONE', terminalStatus, 1, { role: 'completed' });
+  recordStatusIntent(state, 'PVTI_REVIEW', reviewStatus, 1, { role: 'review' });
   const run = beginUpdate(state, 'terminal-run');
-  const plan = { updates: [{ itemId: 'PVTI_DONE', status: 'Done' }] };
+  const plan = { updates: [{ itemId: 'PVTI_DONE', status: terminalStatus }] };
   const review = approveRun(state, run, plan, []);
   storePendingPlan(state, run.runId, plan, {
     projectId: 'PVT_1',
     operations: [{ key: 'status-done', itemId: 'PVTI_DONE', kind: 'status' }]
   }, review, {
     satisfiedStatusIntents: [{
-      itemId: 'PVTI_DONE', targetStatus: 'Done', revision: 1, unbindOnVerification: true
+      itemId: 'PVTI_DONE', targetStatus: terminalStatus, revision: 1, unbindOnVerification: true
     }]
   });
 
   completeSubmission(state, { verifiedTerminalItemIds: new Set(['PVTI_DONE']) });
 
   assert.deepEqual(state.boundItems.map(item => item.itemId), ['PVTI_REVIEW']);
-  assert.equal(state.boundItems[0].statusIntent.targetStatus, 'Review');
+  assert.equal(state.boundItems[0].statusIntent.targetStatus, reviewStatus);
 });
 
 test('an operation-free completion waits for a fresh remote reconciliation', () => {
+  const terminalStatus = fixtureStatus('terminal');
   const state = newStateForTest();
   bindItem(state, { itemId: 'PVTI_DONE', title: 'Completed task' });
-  recordStatusIntent(state, 'PVTI_DONE', 'Done', 1, { role: 'completed' });
+  recordStatusIntent(state, 'PVTI_DONE', terminalStatus, 1, { role: 'completed' });
   const run = beginUpdate(state, 'terminal-noop-run');
-  const plan = { updates: [{ itemId: 'PVTI_DONE', status: 'Done' }] };
+  const plan = { updates: [{ itemId: 'PVTI_DONE', status: terminalStatus }] };
   const review = approveRun(state, run, plan, []);
 
   storePendingPlan(state, run.runId, plan, { projectId: 'PVT_1', operations: [] }, review, {
     satisfiedStatusIntents: [{
-      itemId: 'PVTI_DONE', targetStatus: 'Done', revision: 1, unbindOnVerification: true
+      itemId: 'PVTI_DONE', targetStatus: terminalStatus, revision: 1, unbindOnVerification: true
     }]
   });
 
   assert.equal(state.boundItems.length, 1);
-  assert.equal(state.boundItems[0].statusIntent.targetStatus, 'Done');
+  assert.equal(state.boundItems[0].statusIntent.targetStatus, terminalStatus);
   assert.equal(state.pendingPlan, null);
 });
 
 test('a confirmed write does not release completion without terminal read-back', () => {
+  const terminalStatus = fixtureStatus('terminal');
   const state = newStateForTest();
   bindItem(state, { itemId: 'PVTI_DONE', title: 'Completed task' });
-  recordStatusIntent(state, 'PVTI_DONE', 'Done', 1, { role: 'completed' });
+  recordStatusIntent(state, 'PVTI_DONE', terminalStatus, 1, { role: 'completed' });
   const run = beginUpdate(state, 'terminal-write-run');
-  const plan = { updates: [{ itemId: 'PVTI_DONE', status: 'Done', comment: 'Result.' }] };
+  const plan = { updates: [{ itemId: 'PVTI_DONE', status: terminalStatus, comment: 'Result.' }] };
   const review = approveRun(state, run, plan, []);
   storePendingPlan(state, run.runId, plan, {
     projectId: 'PVT_1', operations: [{ key: 'comment', itemId: 'PVTI_DONE', kind: 'comment' }]
   }, review, {
     satisfiedStatusIntents: [{
-      itemId: 'PVTI_DONE', targetStatus: 'Done', revision: 1, unbindOnVerification: true
+      itemId: 'PVTI_DONE', targetStatus: terminalStatus, revision: 1, unbindOnVerification: true
     }]
   });
 
   completeSubmission(state);
 
   assert.equal(state.boundItems.length, 1);
-  assert.equal(state.boundItems[0].statusIntent.targetStatus, 'Done');
+  assert.equal(state.boundItems[0].statusIntent.targetStatus, terminalStatus);
 });
 
 test('remote managed evidence is deduplicated in the per-item ledger', () => {
@@ -597,6 +607,10 @@ function newStateForTest() {
     pendingPlan: null,
     activeUpdate: null
   };
+}
+
+function fixtureStatus(role) {
+  return `fixture-${role}-${crypto.randomUUID()}`;
 }
 
 function approveRun(state, run, plan, journalCoverage) {
