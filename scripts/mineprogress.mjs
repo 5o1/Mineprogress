@@ -154,9 +154,11 @@ async function inspectInitialization(dataDir, flags) {
 }
 
 async function initCommand(dataDir, flags, positional) {
-  const action = positional[0] || 'preview';
+  if (positional.length) {
+    throw Object.assign(new Error('Run init without a preview or apply action.'), { code: 'INIT_ACTION_INVALID' });
+  }
   const inspection = await inspectInitialization(dataDir, flags);
-  const preview = {
+  const result = {
     project: inspection.project.title,
     owner: inspection.config.owner,
     ownerType: inspection.config.ownerType,
@@ -169,21 +171,17 @@ async function initCommand(dataDir, flags, positional) {
     creationRoute: inspection.creationPolicy?.route || null,
     availableStatuses: inspection.availableStatuses,
     statusFieldFound: inspection.statusFieldFound,
-    updateFieldFound: inspection.updateFieldFound,
-    willCreateFields: inspection.updateFieldFound ? [] : [inspection.config.updateFieldName],
     configTarget: inspection.configTarget
   };
   if (inspection.repositorySelection.selectionRequired) {
-    if (action === 'apply') {
-      throw Object.assign(new Error('The Project links multiple repositories; select one with --repository or choose --no-repository.'), { code: 'DEFAULT_REPOSITORY_SELECTION_REQUIRED' });
-    }
-    return { outcome: 'repository_selection_required', ...preview };
+    return {
+      outcome: 'repository_selection_required',
+      message: 'The Project links multiple repositories. Select one with --repository <owner/name>, or explicitly choose draft-only creation with --no-repository.',
+      ...result
+    };
   }
-  if (action === 'preview') return { outcome: 'confirmation_required', ...preview };
-  if (action !== 'apply') throw Object.assign(new Error(`Unknown init action: ${action}`), { code: 'INIT_ACTION_INVALID' });
-  if (!flags.confirm) throw Object.assign(new Error('init apply requires --confirm after user confirmation.'), { code: 'INIT_CONFIRMATION_REQUIRED' });
   if (!inspection.statusFieldFound || !inspection.availableStatuses.length) {
-    throw Object.assign(new Error(`Project must contain a populated ${inspection.config.statusFieldName} single-select field.`), { code: 'PROJECT_STATUS_FIELD_REQUIRED' });
+    throw Object.assign(new Error(`Create a populated single-select field named ${inspection.config.statusFieldName} in the Project, then rerun init.`), { code: 'PROJECT_STATUS_FIELD_REQUIRED' });
   }
   if (!inspection.updateFieldFound) {
     await createTextField(inspection.client, inspection.project.id, inspection.config.updateFieldName);
@@ -198,7 +196,12 @@ async function initCommand(dataDir, flags, positional) {
       key: inspection.creationPolicy.key
     }
   });
-  return { outcome: 'initialized', ...preview, updateFieldCreated: !inspection.updateFieldFound };
+  return {
+    outcome: 'initialized',
+    ...result,
+    updateFieldFound: true,
+    updateFieldCreated: !inspection.updateFieldFound
+  };
 }
 
 async function createCommand(dataDir, flags, positional) {

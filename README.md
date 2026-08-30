@@ -11,10 +11,10 @@ active GitHub CLI login automatically:
 $mineprogress:init
 ```
 
-The guide asks for a GitHub Project URL, uses its linked repository automatically, previews detected
-fields, statuses, visibility, and creation behavior, then saves the confirmed configuration in
-Codex's plugin data directory. It asks which repository to use only when the Project links several.
-No configuration file is added to the working repository.
+The guide asks for a GitHub Project URL, uses its linked repository automatically, initializes the
+plugin, and reports the resulting statuses, visibility, and creation behavior. It asks which
+repository to use only when the Project links several. No configuration file is added to the
+working repository.
 
 Mineprogress uses an explicit Codex Skill command:
 

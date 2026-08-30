@@ -49,7 +49,7 @@ test('guided initialization requires a choice only for multiple linked repositor
   });
 });
 
-test('confirmed initialization writes config and global metadata to plugin data', async t => {
+test('initialization writes config and global metadata without a preview phase', async t => {
   const dataDir = await fs.mkdtemp(path.join(os.tmpdir(), 'mineprogress-init-'));
   t.after(() => fs.rm(dataDir, { recursive: true, force: true }));
   const previousToken = process.env.GITHUB_TOKEN;
@@ -82,10 +82,9 @@ test('confirmed initialization writes config and global metadata to plugin data'
     if (previousDisableGh === undefined) delete process.env.MINEPROGRESS_DISABLE_GH_AUTH; else process.env.MINEPROGRESS_DISABLE_GH_AUTH = previousDisableGh;
   });
   const result = await run([
-    'init', 'apply',
+    'init',
     '--project-url', 'https://github.com/users/octocat/projects/1',
     '--repository', 'octocat/todos',
-    '--confirm',
     '--data-dir', dataDir
   ]);
   assert.equal(result.outcome, 'initialized');
@@ -95,4 +94,12 @@ test('confirmed initialization writes config and global metadata to plugin data'
   const metadata = await readProjectMetadata(dataDir, saved);
   assert.deepEqual(metadata.availableStatuses, ['Doing']);
   assert.equal(metadata.creationPolicy.route, 'draft');
+});
+
+test('initialization rejects legacy preview and apply phases', async () => {
+  await assert.rejects(() => run([
+    'init', 'preview',
+    '--project-url', 'https://github.com/users/octocat/projects/1',
+    '--data-dir', 'unused'
+  ]), { code: 'INIT_ACTION_INVALID' });
 });
