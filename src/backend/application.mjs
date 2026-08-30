@@ -644,6 +644,7 @@ async function prepareUpdate(dataDir, sessionId, runtime) {
     context,
     referenceLinks
   };
+  result.previousAttemptErrors = run.previousAttemptErrors || [];
   if (run.phase === 'staged') {
     result.stagedPlan = run.stagedPlan;
     result.staticReport = run.staticReport;
@@ -743,6 +744,7 @@ async function stageUpdate(dataDir, sessionId, flags, runtime) {
     });
     if (!report.valid) {
       resetStagedUpdate(state, state.activeUpdate.runId);
+      state.activeUpdate.previousAttemptErrors = report.errors;
       const exhausted = await exhaustIfNeeded(dataDir, state, config, 'static-validation', report.errors.join(' '));
       await writeState(dataDir, state);
       return { accepted: false, exhausted, attempt: state.activeUpdate.attempt, errors: report.errors };
@@ -757,6 +759,7 @@ async function stageUpdate(dataDir, sessionId, flags, runtime) {
       staticReport: report,
       proposalBodyItemIds
     });
+    state.activeUpdate.previousAttemptErrors = [];
     await writeState(dataDir, state);
     return {
       accepted: true,
@@ -796,12 +799,14 @@ async function applyUpdate(dataDir, sessionId, flags, runtime) {
     });
     if (!reviewReport.valid) {
       resetStagedUpdate(state, state.activeUpdate.runId);
+      state.activeUpdate.previousAttemptErrors = reviewReport.errors;
       const exhausted = await exhaustIfNeeded(dataDir, state, config, 'review-output', reviewReport.errors.join(' '));
       await writeState(dataDir, state);
       return { applied: false, exhausted, errors: reviewReport.errors };
     }
     if (review.decision === 'reject') {
       resetStagedUpdate(state, state.activeUpdate.runId);
+      state.activeUpdate.previousAttemptErrors = [review.reason];
       const exhausted = await exhaustIfNeeded(dataDir, state, config, 'semantic-review', review.reason);
       await writeState(dataDir, state);
       return { applied: false, exhausted, errors: [review.reason] };

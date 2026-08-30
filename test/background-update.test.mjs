@@ -62,6 +62,8 @@ test('background worker generates and reviews a plan without submitting it', asy
     forks.push(input.forkSessionId);
     if ('updates' in input.schema.properties) {
       assert.deepEqual(input.schema.properties.updates.items.required, ['itemId', 'status', 'summary', 'body', 'comment']);
+      assert.deepEqual(input.schema.properties.updates.items.properties.itemId.enum, ['PVTI_1']);
+      assert.deepEqual(input.schema.properties.updates.items.properties.status.enum, ['Todo', 'Done', null]);
       return { updates: [{ itemId: 'PVTI_1', status: 'Done', summary: 'Parser completed.', body: null, comment: null }] };
     }
     assert.deepEqual(input.schema.required, ['decision', 'reason', 'journalCoverage']);
@@ -91,6 +93,55 @@ test('background worker generates and reviews a plan without submitting it', asy
   assert.match(prompts[1], /proposedPlan/);
   assert.match(prompts[1], /Reviewer checklist/);
   assert.match(prompts[1], /Required work or verification remains incomplete/);
+});
+
+test('background generation receives static validation feedback on its next bounded attempt', async t => {
+  const dataDir = await fs.mkdtemp(path.join(os.tmpdir(), 'mineprogress-background-feedback-'));
+  t.after(() => fs.rm(dataDir, { recursive: true, force: true }));
+  let prepareCount = 0;
+  let stageCount = 0;
+  const prompts = [];
+  const result = await runBackgroundUpdate(dataDir, 'session-feedback', {
+    runCommand: async argv => {
+      if (argv[1] === 'prepare') {
+        prepareCount++;
+        return {
+          outcome: 'generate_and_review',
+          prompt: 'Update contract',
+          previousAttemptErrors: prepareCount === 1 ? [] : ['updates[0].summary must use the item content language en.'],
+          existingPlan: { updates: [] },
+          availableStatuses: ['Todo', 'Done'],
+          statusRules: null,
+          boundItems: [{ itemId: 'PVTI_1', title: 'Parser', contentLanguage: 'en' }],
+          referenceLinks: [], context: [{ sequence: 1, kind: 'user', text: '完成。' }],
+          useThreadHistory: false, promptNames: ['update'], planningDate: '2026-08-30',
+          model: { model: 'gpt-5.6-luna', reasoningEffort: 'medium' },
+          reviewModel: { model: 'gpt-5.6-luna', reasoningEffort: 'medium' }
+        };
+      }
+      if (argv[1] === 'stage') {
+        stageCount++;
+        return stageCount === 1
+          ? { accepted: false, exhausted: false, errors: ['updates[0].summary must use the item content language en.'] }
+          : { accepted: true, plan: { updates: [] }, staticReport: { valid: true, errors: [] } };
+      }
+      if (argv[1] === 'apply') return { planned: true, queuedUpdates: 0 };
+      throw new Error(`Unexpected command: ${argv.join(' ')}`);
+    },
+    invokeModel: async input => {
+      prompts.push(input.prompt);
+      if ('updates' in input.schema.properties) return { updates: [] };
+      return {
+        decision: 'approve', reason: 'No durable delta.',
+        journalCoverage: [{ sequence: 1, disposition: 'irrelevant', itemIds: [], reason: 'No verified result.' }]
+      };
+    }
+  });
+  assert.equal(result.planned, true);
+  assert.equal(prepareCount, 2);
+  assert.equal(stageCount, 2);
+  assert.doesNotMatch(prompts[0], /previous candidate failed static validation/iu);
+  assert.match(prompts[1], /summary must use the item content language en/iu);
 });
 
 test('background worker reviews every journal entry before accepting an unchanged pending plan', async t => {
