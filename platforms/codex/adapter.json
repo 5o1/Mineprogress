@@ -1,0 +1,23 @@
+{
+  "schemaVersion": 1,
+  "id": "codex",
+  "displayName": "Codex",
+  "status": "implemented",
+  "entrypoints": {
+    "commands": "src/frontends/codex/cli.mjs",
+    "lifecycle": "src/frontends/codex/hook.mjs",
+    "background": "src/frontends/codex/background-update.mjs"
+  },
+  "resources": {
+    "hooks": "hooks/hooks.json",
+    "skills": "skills"
+  },
+  "capabilities": {
+    "lifecycleEvents": ["session-start", "user-prompt", "turn-stop", "session-end"],
+    "explicitCommands": true,
+    "backgroundExecution": true,
+    "threadHistory": true,
+    "structuredModelOutput": true,
+    "writableDataDirectory": true
+  }
+}

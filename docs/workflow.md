@@ -2,6 +2,10 @@
 
 ## Thread lifecycle
 
+The behavior below is shared backend policy; lifecycle names and thread-history details describe the
+current Codex adapter. Other hosts must translate their events through the documented adapter
+contract.
+
 Lifecycle hooks stay silent and create no thread state before initialization or in ordinary threads
 with no bound item. A first `create` or `bind` marks the binding for full-history backfill. SessionEnd
 retains state for a later resume, and no runtime file is written to the repository:

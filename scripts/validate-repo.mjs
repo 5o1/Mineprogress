@@ -3,10 +3,12 @@ import fs from 'node:fs/promises';
 import path from 'node:path';
 import process from 'node:process';
 import { fileURLToPath } from 'node:url';
+import { validateHostManifest } from '../src/host/contract.mjs';
 
 const root = path.dirname(path.dirname(fileURLToPath(import.meta.url)));
 const read = relative => fs.readFile(path.join(root, relative), 'utf8');
 const errors = [];
+const hostIds = ['codex', 'claude-code', 'openclaw'];
 
 const skillNames = ['init', 'create', 'bind', 'unbind', 'update', 'check', 'status'];
 const [manifest, packageJson, hooks, example, readme, configuration, workflow, development, releaseWorkflow, releaseValidation, skillEntries] = await Promise.all([
@@ -72,6 +74,12 @@ if ([readme, configuration, workflow, development].some(document => /[\u3400-\u9
 }
 const changelog = await read('CHANGELOG.md');
 if (!/^## \[Unreleased\]$/m.test(changelog)) errors.push('CHANGELOG.md must retain an Unreleased section.');
+for (const id of hostIds) {
+  const adapter = await read(`platforms/${id}/adapter.json`).then(JSON.parse);
+  for (const error of validateHostManifest(adapter)) errors.push(`Host adapter ${id}: ${error}.`);
+  if (adapter.id !== id) errors.push(`Host adapter directory ${id} does not match manifest id.`);
+  if (adapter.status === 'planned' && adapter.entrypoints) errors.push(`Planned host adapter ${id} must not claim entrypoints.`);
+}
 if (!releaseWorkflow.includes('workflow_run:') ||
     !releaseWorkflow.includes("github.event.workflow_run.conclusion == 'success'") ||
     !releaseWorkflow.includes('github.event.workflow_run.head_sha') ||
@@ -92,6 +100,8 @@ const requiredFiles = [
   'docs/configuration.md',
   'docs/workflow.md',
   'docs/development.md',
+  'docs/architecture.md',
+  'docs/host-adapters.md',
   'CHANGELOG.md',
   'LICENSE',
   'scripts/mineprogress.mjs',
@@ -100,7 +110,13 @@ const requiredFiles = [
   'scripts/lib/atomic-file.mjs',
   'scripts/lib/errors.mjs',
   'scripts/lib/auth.mjs',
-  'scripts/lib/state.mjs'
+  'scripts/lib/state.mjs',
+  'src/backend/application.mjs',
+  'src/backend/index.mjs',
+  'src/backend/lifecycle.mjs',
+  'src/host/contract.mjs',
+  'src/frontends/codex/cli.mjs',
+  'platforms/adapter.schema.json'
 ];
 for (const relative of requiredFiles) {
   try { await fs.access(path.join(root, relative)); } catch { errors.push(`Required file is missing: ${relative}`); }

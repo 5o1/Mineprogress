@@ -2,17 +2,21 @@
 
 ## Project Structure & Module Organization
 
-Mineprogress is a dependency-free Node.js Codex plugin for thread-bound GitHub Projects work.
+Mineprogress is a dependency-free Node.js service with replaceable coding-agent adapters for
+thread-bound GitHub Projects work.
 
-- `scripts/mineprogress.mjs`: command entry point for init, create, bind, update, check, and status.
-- `scripts/hook.mjs`: SessionStart, UserPromptSubmit, Stop, and SessionEnd adapter.
-- `scripts/lib/`: configuration, GitHub GraphQL, state, validation, metadata, and error modules.
+- `src/backend/`: host-independent use cases, state, persistence, validation, and GitHub GraphQL I/O.
+- `src/host/`: normalized lifecycle and adapter-manifest contracts.
+- `src/frontends/codex/`: Codex CLI, Hook mapping, authentication, and model/background runtime.
+- `scripts/` and `scripts/lib/`: compatibility entrypoints; do not add product logic here.
+- `platforms/`: Codex capability manifest and planned Claude Code/OpenClaw contracts.
 - `hooks/hooks.json` and `skills/<command>/SKILL.md`: lifecycle hooks and command-specific Skills.
 - `prompts/`: runtime create, bind, update, and reviewer contracts.
 - `test/*.test.mjs`: Node test suites; `docs/` contains detailed user and maintainer guidance.
 - `.github/workflows/`: focused CI and tag-based GitHub Release automation.
 
 Runtime state belongs under Codex `PLUGIN_DATA`, never in a working repository.
+Future adapters must provide an equivalent private writable data directory.
 
 ## Build, Test, and Development Commands
 
@@ -36,6 +40,7 @@ Use `node:test` and `node:assert/strict`. Name files `<feature>.test.mjs`. Keep 
 mock GraphQL responses and use temporary `PLUGIN_DATA` directories instead of live GitHub calls.
 Cover new state transitions, failure classes, and public-write routing. Run `npm run ci`; no numeric
 coverage threshold is configured.
+Backend code must not reference host names, raw hook fields, host command syntax, or adapter modules.
 
 ## Commit & Pull Request Guidelines
 

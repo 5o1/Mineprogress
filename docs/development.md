@@ -1,5 +1,16 @@
 # Development and Release
 
+## Source layout
+
+- `src/backend/` contains host-independent application, domain, persistence, and GitHub I/O code.
+- `src/host/` defines the adapter contract.
+- `src/frontends/codex/` is the only implemented host adapter.
+- `platforms/` records implemented and planned adapter capabilities.
+- `scripts/` and `scripts/lib/` preserve package and import compatibility; add new logic under `src/`.
+
+See [Architecture](architecture.md) and [Host adapters](host-adapters.md) before changing lifecycle or
+command boundaries.
+
 ## Local verification
 
 ```text
@@ -14,6 +25,7 @@ managed Issue/Draft bodies, recoverable Issue comments, background planning boun
 review checks, error redaction, and Stop loop prevention.
 `validate` checks manifest/package versions, hook paths,
 command-Skill discovery size, explicit invocation policy, and required resources.
+Architecture tests also reject host-specific identifiers or imports in backend source.
 
 ## GitHub Actions
 

@@ -1,0 +1,14 @@
+{
+  "schemaVersion": 1,
+  "id": "claude-code",
+  "displayName": "Claude Code",
+  "status": "planned",
+  "capabilities": {
+    "lifecycleEvents": ["session-start", "user-prompt", "turn-stop", "session-end"],
+    "explicitCommands": true,
+    "backgroundExecution": true,
+    "threadHistory": true,
+    "structuredModelOutput": true,
+    "writableDataDirectory": true
+  }
+}

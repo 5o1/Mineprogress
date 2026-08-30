@@ -5,6 +5,19 @@ Notable user-visible changes are documented here. Entries follow
 
 ## [Unreleased]
 
+### Changed
+
+- Separated host-independent application, lifecycle, persistence, validation, and GitHub Projects
+  logic from Codex CLI, hook, authentication, and model-runtime adapters.
+- Reduced legacy `scripts/` modules to compatibility entrypoints while preserving existing imports.
+
+### Added
+
+- Added a versioned host-adapter contract, capability manifests, and contributor specifications for
+  future Claude Code and OpenClaw integrations without claiming runtime support.
+- Added architecture tests that prevent host payload fields, command syntax, or adapter imports from
+  entering backend source.
+
 ## [0.5.0] - 2026-08-30
 
 ### Added

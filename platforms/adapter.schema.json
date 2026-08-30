@@ -1,0 +1,48 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/5o1/Mineprogress/platforms/adapter.schema.json",
+  "title": "Mineprogress Host Adapter Manifest",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schemaVersion", "id", "displayName", "status", "capabilities"],
+  "properties": {
+    "schemaVersion": { "const": 1 },
+    "id": { "type": "string", "pattern": "^[a-z][a-z0-9-]*$" },
+    "displayName": { "type": "string", "minLength": 1 },
+    "status": { "enum": ["implemented", "planned"] },
+    "entrypoints": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "commands": { "type": "string" },
+        "lifecycle": { "type": "string" },
+        "background": { "type": "string" }
+      }
+    },
+    "resources": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "hooks": { "type": "string" },
+        "skills": { "type": "string" }
+      }
+    },
+    "capabilities": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["lifecycleEvents", "explicitCommands", "backgroundExecution", "threadHistory", "structuredModelOutput", "writableDataDirectory"],
+      "properties": {
+        "lifecycleEvents": {
+          "type": "array",
+          "uniqueItems": true,
+          "items": { "enum": ["session-start", "user-prompt", "turn-stop", "session-end"] }
+        },
+        "explicitCommands": { "type": "boolean" },
+        "backgroundExecution": { "type": "boolean" },
+        "threadHistory": { "type": "boolean" },
+        "structuredModelOutput": { "type": "boolean" },
+        "writableDataDirectory": { "type": "boolean" }
+      }
+    }
+  }
+}

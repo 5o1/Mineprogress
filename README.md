@@ -1,6 +1,6 @@
 # Mineprogress
 
-Bind a Codex thread to GitHub Project items, maintain structured progress history in the background, and silently submit it when the conversation ends.
+Bind a coding-agent thread to GitHub Project items, maintain structured progress history in the background, and silently submit it when the conversation ends. Codex is the currently implemented host adapter.
 
 ## Usage
 
@@ -33,7 +33,8 @@ $mineprogress:status
 - `check` discovers actual Kanban statuses and suggests items to bind or unbind without changing them.
 - `status` works offline and shows the creation route, available statuses, and unresolved errors.
 
-See [Configuration](docs/configuration.md), [Workflow](docs/workflow.md), and
+See [Configuration](docs/configuration.md), [Workflow](docs/workflow.md),
+[Architecture](docs/architecture.md), [Host adapters](docs/host-adapters.md), and
 [Development and release](docs/development.md) for details.
 
 ## License
