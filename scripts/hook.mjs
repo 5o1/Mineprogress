@@ -4,10 +4,10 @@ import fs from 'node:fs/promises';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { configPath } from './lib/config.mjs';
+import { withSessionLock } from './lib/lock.mjs';
 import {
   appendJournal,
   authorizeCommand,
-  beginUpdate,
   controlCommandAction,
   isControlPrompt,
   isControlTurn,
@@ -48,13 +48,14 @@ async function sessionStart(dataDir, input) {
   const sessionId = sessionIdOf(input);
   if (!await isInitialized(dataDir)) return;
   const state = await readState(dataDir, sessionId);
-  if (!state?.boundItems.length) return;
+  if (!state) return;
   if (state.pendingPlan) await reconcilePendingUpdate(dataDir, sessionId);
   const configuredRetention = Number(process.env.MINEPROGRESS_STATE_RETENTION_DAYS || 30);
   await pruneStaleStates(dataDir, {
     retentionDays: Number.isFinite(configuredRetention) && configuredRetention > 0 ? configuredRetention : 30,
     keepSessionId: sessionId
   });
+  if (!state.boundItems.length) return;
   console.log(`Mineprogress restored thread cache for session_id=${sessionId}, data_dir=${dataDir}. ${state.boundItems.length} item(s) bound. Project data is loaded only by explicit commands or update.`);
 }
 
@@ -64,8 +65,8 @@ async function userPrompt(dataDir, input) {
   const control = isControlPrompt(prompt);
   const action = controlCommandAction(prompt);
   const initialized = await isInitialized(dataDir);
-  let state = await readState(dataDir, sessionId);
-  if (!control && (!initialized || !state?.boundItems.length)) return;
+  const existing = await readState(dataDir, sessionId);
+  if (!control && (!initialized || !existing?.boundItems.length)) return;
   if (control && action === 'init') {
     console.log(JSON.stringify({
       hookSpecificOutput: {
@@ -75,13 +76,15 @@ async function userPrompt(dataDir, input) {
     }));
     return;
   }
-  if (control && !state) ({ state } = await openSession(dataDir, sessionId));
-  if (control) {
-    markControlTurn(state, input.turn_id);
-    authorizeCommand(state, action, input.turn_id);
-  }
-  appendJournal(state, { kind: 'user', turnId: input.turn_id, text: prompt, control });
-  await writeState(dataDir, state);
+  await withSessionLock(dataDir, sessionId, async () => {
+    const { state } = await openSession(dataDir, sessionId);
+    if (control) {
+      markControlTurn(state, input.turn_id);
+      authorizeCommand(state, action, input.turn_id);
+    }
+    appendJournal(state, { kind: 'user', turnId: input.turn_id, text: prompt, control });
+    await writeState(dataDir, state);
+  });
   if (control) {
     console.log(JSON.stringify({
       hookSpecificOutput: {
@@ -96,41 +99,33 @@ async function stop(dataDir, input) {
   const sessionId = sessionIdOf(input);
   if (input.stop_hook_active) return;
   if (!await isInitialized(dataDir)) return;
-  const state = await readState(dataDir, sessionId);
-  if (!state?.boundItems.length) return;
-  appendJournal(state, {
-    kind: 'assistant',
-    turnId: input.turn_id,
-    text: input.last_assistant_message || '',
-    control: isControlTurn(state, input.turn_id)
+  await withSessionLock(dataDir, sessionId, async () => {
+    const state = await readState(dataDir, sessionId);
+    if (!state?.boundItems.length) return;
+    appendJournal(state, {
+      kind: 'assistant',
+      turnId: input.turn_id,
+      text: input.last_assistant_message || '',
+      control: isControlTurn(state, input.turn_id)
+    });
+    if (state.boundItems.length && state.journal.length) {
+      state.backgroundRequestedThrough = state.journal.at(-1).sequence;
+    }
+    await writeState(dataDir, state);
   });
-  if (state.pendingPlan?.attempts?.length) {
-    await writeState(dataDir, state);
-    return;
-  }
-  const run = beginUpdate(state);
-  if (!run) {
-    await writeState(dataDir, state);
-    return;
-  }
-  if (run.exhausted) {
-    await writeState(dataDir, state);
-    return;
-  }
-  await writeState(dataDir, state);
-  console.log(JSON.stringify({
-    decision: 'block',
-    reason: `Mineprogress has an incremental plan revision pending for ${state.boundItems.length} bound item(s). Run node \"${path.join(ROOT, 'scripts', 'mineprogress.mjs')}\" update prepare --session \"${sessionId}\" --data-dir \"${dataDir}\". Consolidate existingPlan with only the returned incremental context, run update stage, delegate approve/reject review to a separate reviewer subagent, then run update apply to store the reviewed plan without writing GitHub. Allow at most five content rounds. Do not run update submit, create, bind, or unbind. Keep a successful automatic plan revision silent; surface only a failure.`
-  }));
 }
 
 async function sessionEnd(dataDir, input) {
   const sessionId = sessionIdOf(input);
   if (!await isInitialized(dataDir)) return;
-  const state = await readState(dataDir, sessionId);
-  if (!state || (!state.boundItems.length && !state.pendingPlan)) return;
-  state.lastEndedAt = new Date().toISOString();
-  await writeState(dataDir, state);
+  const state = await withSessionLock(dataDir, sessionId, async () => {
+    const current = await readState(dataDir, sessionId);
+    if (!current || (!current.boundItems.length && !current.pendingPlan)) return null;
+    current.lastEndedAt = new Date().toISOString();
+    await writeState(dataDir, current);
+    return current;
+  });
+  if (!state) return;
   if (state.pendingPlan) await submitPendingUpdate(dataDir, sessionId, { verify: false });
 }
 

@@ -45,6 +45,9 @@ if (manifest.interface?.defaultPrompt?.includes('$mineprogress:init') !== true) 
 if (!hooks.hooks?.SessionStart || !hooks.hooks?.UserPromptSubmit || !hooks.hooks?.Stop || !hooks.hooks?.SessionEnd) {
   errors.push('Required lifecycle hooks are missing.');
 }
+if (!hooks.hooks?.Stop?.[0]?.hooks?.some(hook => hook.async === true && hook.command.includes('background-update.mjs'))) {
+  errors.push('Stop planning must run as a separate asynchronous hook.');
+}
 for (const group of Object.values(hooks.hooks || {})) {
   for (const matcher of group) {
     for (const hook of matcher.hooks || []) {
@@ -83,6 +86,7 @@ const requiredFiles = [
   'docs/development.md',
   'LICENSE',
   'scripts/mineprogress.mjs',
+  'scripts/background-update.mjs',
   'scripts/hook.mjs',
   'scripts/lib/errors.mjs',
   'scripts/lib/auth.mjs',

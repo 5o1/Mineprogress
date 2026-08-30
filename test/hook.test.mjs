@@ -14,7 +14,7 @@ function invoke(mode, input, dataDir) {
   return spawnSync(process.execPath, [hook, mode], {
     input: JSON.stringify(input),
     encoding: 'utf8',
-    env: { ...process.env, PLUGIN_DATA: dataDir, PLUGIN_ROOT: root }
+    env: { ...process.env, PLUGIN_DATA: dataDir, PLUGIN_ROOT: root, MINEPROGRESS_DISABLE_BACKGROUND_UPDATE: '1' }
   });
 }
 
@@ -85,7 +85,7 @@ test('configured hooks stay silent until the thread has a bound item', async t =
   assert.equal(await readState(dataDir, 'session-empty'), null);
 });
 
-test('hooks journal and Stop blocks only for bound incremental work', async t => {
+test('bound Stop journals without blocking the foreground conversation', async t => {
   const dataDir = await fs.mkdtemp(path.join(os.tmpdir(), 'mineprogress-hook-bound-'));
   t.after(() => fs.rm(dataDir, { recursive: true, force: true }));
   await markInitialized(dataDir);
@@ -101,12 +101,29 @@ test('hooks journal and Stop blocks only for bound incremental work', async t =>
 
   const stopped = invoke('stop', { session_id: 'session-1', turn_id: 'turn-1', last_assistant_message: 'Parser tests pass.', stop_hook_active: false }, dataDir);
   assert.equal(stopped.status, 0, stopped.stderr);
-  assert.equal(JSON.parse(stopped.stdout).decision, 'block');
-  assert.equal((await readState(dataDir, 'session-1')).activeUpdate.toSequence, 2);
+  assert.equal(stopped.stdout, '');
+  const stoppedState = await readState(dataDir, 'session-1');
+  assert.equal(stoppedState.activeUpdate, null);
+  assert.deepEqual(stoppedState.journal.map(event => event.text), ['Implement parser tests.', 'Parser tests pass.']);
 
   const guarded = invoke('stop', { session_id: 'session-1', turn_id: 'turn-1', last_assistant_message: 'Ignored', stop_hook_active: true }, dataDir);
   assert.equal(guarded.status, 0, guarded.stderr);
   assert.equal(guarded.stdout, '');
+});
+
+test('binding schedules a full thread-history backfill without an earlier journal', async t => {
+  const dataDir = await fs.mkdtemp(path.join(os.tmpdir(), 'mineprogress-hook-pre-create-'));
+  t.after(() => fs.rm(dataDir, { recursive: true, force: true }));
+  await markInitialized(dataDir);
+  invoke('user-prompt', { session_id: 'session-create', turn_id: 'turn-1', prompt: 'Earlier discussion before binding.' }, dataDir);
+  assert.equal(await readState(dataDir, 'session-create'), null);
+  const { state } = await openSession(dataDir, 'session-create');
+  bindItem(state, { itemId: 'PVTI_1', title: 'Mineprogress' });
+  await writeState(dataDir, state);
+  const restored = await readState(dataDir, 'session-create');
+  assert.deepEqual(restored.journal, []);
+  assert.equal(restored.fullContextRequestedRevision, 1);
+  assert.equal(restored.fullContextPlannedRevision, 0);
 });
 
 test('Stop does not revise a plan while an earlier submission is unverified', async t => {

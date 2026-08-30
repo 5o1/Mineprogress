@@ -18,6 +18,7 @@ import {
   reconcilePreparedOperations
 } from './lib/github-projects.mjs';
 import { classifyError, logError, resolveError, unresolvedErrors } from './lib/errors.mjs';
+import { withSessionLock } from './lib/lock.mjs';
 import { readProjectMetadata, updateProjectMetadata } from './lib/metadata.mjs';
 import {
   beginUpdate,
@@ -207,13 +208,18 @@ async function initCommand(dataDir, flags, positional) {
 async function createCommand(dataDir, flags, positional) {
   const sessionId = requiredSession(flags);
   const title = flags.title || positional.join(' ');
-  const { state } = await openSession(dataDir, sessionId);
-  const consumeAuthorization = requireCommandAuthorization(state, 'create');
+  const initial = await readState(dataDir, sessionId);
+  if (!initial) throw Object.assign(new Error('Thread cache does not exist.'), { code: 'STATE_NOT_FOUND' });
+  requireCommandAuthorization(initial, 'create');
   const config = await pluginConfig(dataDir);
   const item = await createKanbanItem(config, await githubClient(), title);
-  bindItem(state, item);
-  consumeAuthorization();
-  await writeState(dataDir, state);
+  await withSessionLock(dataDir, sessionId, async () => {
+    const state = await readState(dataDir, sessionId);
+    const consumeAuthorization = requireCommandAuthorization(state, 'create');
+    bindItem(state, item);
+    consumeAuthorization();
+    await writeState(dataDir, state);
+  });
   await updateProjectMetadata(dataDir, config, { creationPolicy: {
     projectVisibility: item.policy.projectVisibility,
     repositoryVisibility: item.policy.repositoryVisibility,
@@ -239,15 +245,21 @@ async function bindCommand(dataDir, flags, positional) {
   const sessionId = requiredSession(flags);
   const itemId = flags.item || positional[0];
   if (!itemId) throw Object.assign(new Error('Pass --item <Project item id>.'), { code: 'ITEM_ID_REQUIRED' });
-  const { state } = await openSession(dataDir, sessionId);
-  const consumeAuthorization = requireCommandAuthorization(state, 'bind');
+  const initial = await readState(dataDir, sessionId);
+  if (!initial) throw Object.assign(new Error('Thread cache does not exist.'), { code: 'STATE_NOT_FOUND' });
+  requireCommandAuthorization(initial, 'bind');
   const config = await pluginConfig(dataDir);
   const project = await readProject(config, await githubClient());
   const item = project.normalizedItems.find(candidate => candidate.itemId === itemId);
   if (!item) throw Object.assign(new Error('Item is not in the configured Project.'), { code: 'PROJECT_ITEM_NOT_FOUND' });
-  const changed = bindItem(state, item);
-  consumeAuthorization();
-  await writeState(dataDir, state);
+  const changed = await withSessionLock(dataDir, sessionId, async () => {
+    const state = await readState(dataDir, sessionId);
+    const consumeAuthorization = requireCommandAuthorization(state, 'bind');
+    const bound = bindItem(state, item);
+    consumeAuthorization();
+    await writeState(dataDir, state);
+    return bound;
+  });
   return { changed, item };
 }
 
@@ -255,11 +267,15 @@ async function unbindCommand(dataDir, flags, positional) {
   const sessionId = requiredSession(flags);
   const itemId = flags.item || positional[0];
   if (!itemId) throw Object.assign(new Error('Pass --item <Project item id>.'), { code: 'ITEM_ID_REQUIRED' });
-  const { state } = await openSession(dataDir, sessionId);
-  const consumeAuthorization = requireCommandAuthorization(state, 'unbind');
-  const changed = unbindItem(state, itemId);
-  consumeAuthorization();
-  await writeState(dataDir, state);
+  const changed = await withSessionLock(dataDir, sessionId, async () => {
+    const state = await readState(dataDir, sessionId);
+    if (!state) throw Object.assign(new Error('Thread cache does not exist.'), { code: 'STATE_NOT_FOUND' });
+    const consumeAuthorization = requireCommandAuthorization(state, 'unbind');
+    const unbound = unbindItem(state, itemId);
+    consumeAuthorization();
+    await writeState(dataDir, state);
+    return unbound;
+  });
   return { changed, itemId };
 }
 
@@ -296,40 +312,59 @@ async function checkCommand(dataDir, flags) {
 }
 
 async function prepareUpdate(dataDir, sessionId) {
-  const { state } = await openSession(dataDir, sessionId);
-  if (state.pendingPlan?.attempts?.length) {
-    return { outcome: 'submission_unverified', reason: 'Verify the earlier submission with update submit before revising the plan.' };
-  }
-  const run = beginUpdate(state);
-  if (!run) {
-    if (state.pendingPlan) {
-      return { outcome: 'pending_submission', updates: state.pendingPlan.plan.updates.length, throughSequence: state.pendingPlan.throughSequence };
+  const setup = await withSessionLock(dataDir, sessionId, async () => {
+    const { state } = await openSession(dataDir, sessionId);
+    if (state.pendingPlan?.attempts?.length) {
+      return { result: { outcome: 'submission_unverified', reason: 'Verify the earlier submission with update submit before revising the plan.' } };
     }
-    return { outcome: 'noop', reason: 'No context exists after the last planned update.' };
-  }
-  if (run.exhausted) {
-    return { outcome: 'exhausted', runId: run.runId, errorId: run.exhaustionErrorId, reason: 'Content attempts are suspended. Use update retry only after the user explicitly requests another run.' };
-  }
-  if (run.approvedReview?.decision === 'approve' && run.stagedPlan) {
-    return { outcome: 'resume_apply', sessionId, runId: run.runId, reason: 'Store the already approved consolidated plan with update apply; no new review is required.' };
-  }
-  if (!state.boundItems.length) {
-    completeUpdate(state, run.runId);
+    const run = beginUpdate(state);
+    if (!run) {
+      if (state.pendingPlan) {
+        return { result: { outcome: 'pending_submission', updates: state.pendingPlan.plan.updates.length, throughSequence: state.pendingPlan.throughSequence } };
+      }
+      return { result: { outcome: 'noop', reason: 'No context exists after the last planned update.' } };
+    }
+    if (run.exhausted) {
+      return { result: { outcome: 'exhausted', runId: run.runId, errorId: run.exhaustionErrorId, reason: 'Content attempts are suspended. Use update retry only after the user explicitly requests another run.' } };
+    }
+    if (run.approvedReview?.decision === 'approve' && run.stagedPlan) {
+      return { result: { outcome: 'resume_apply', sessionId, runId: run.runId, reason: 'Store the already approved consolidated plan with update apply; no new review is required.' } };
+    }
+    if (!state.boundItems.length) {
+      completeUpdate(state, run.runId);
+      await writeState(dataDir, state);
+      return { result: { outcome: 'noop', reason: 'No items are bound; checkpoint advanced.' } };
+    }
     await writeState(dataDir, state);
-    return { outcome: 'noop', reason: 'No items are bound; checkpoint advanced.' };
-  }
+    return { runId: run.runId };
+  });
+  if (setup.result) return setup.result;
   const config = await pluginConfig(dataDir);
   const project = await readProject(config, await githubClient());
   const availableStatuses = projectStatusOptions(project, config).map(option => option.name);
   await updateProjectMetadata(dataDir, config, { availableStatuses });
-  const boundIds = new Set(state.boundItems.map(item => item.itemId));
   const prompt = await fs.readFile(path.join(ROOT, 'prompts', 'update.md'), 'utf8');
-  state.activeUpdate.projectSnapshot = {
-    id: project.id,
-    fields: project.fields,
-    normalizedItems: project.normalizedItems
-  };
-  await writeState(dataDir, state);
+  const state = await withSessionLock(dataDir, sessionId, async () => {
+    const latest = await readState(dataDir, sessionId);
+    if (!latest?.activeUpdate || latest.activeUpdate.runId !== setup.runId) {
+      throw Object.assign(new Error('The background update changed while Project data was loading.'), { code: 'UPDATE_RUN_MISMATCH' });
+    }
+    if (!latest.boundItems.length) {
+      completeUpdate(latest, setup.runId);
+      await writeState(dataDir, latest);
+      return null;
+    }
+    latest.activeUpdate.projectSnapshot = {
+      id: project.id,
+      fields: project.fields,
+      normalizedItems: project.normalizedItems
+    };
+    await writeState(dataDir, latest);
+    return latest;
+  });
+  if (!state) return { outcome: 'noop', reason: 'No items remain bound; checkpoint advanced.' };
+  const run = state.activeUpdate;
+  const boundIds = new Set(state.boundItems.map(item => item.itemId));
   return {
     outcome: 'generate_and_review',
     sessionId,
@@ -339,6 +374,7 @@ async function prepareUpdate(dataDir, sessionId) {
     model: config.models.update,
     reviewModel: config.models.review,
     preferFastMode: config.models.preferFastMode,
+    useThreadHistory: Boolean(run.useThreadHistory),
     prompt,
     existingPlan: state.pendingPlan?.plan || { updates: [] },
     availableStatuses,
@@ -364,77 +400,89 @@ async function exhaustIfNeeded(dataDir, state, config, stage, message) {
 }
 
 async function stageUpdate(dataDir, sessionId, flags) {
-  const state = await readState(dataDir, sessionId);
-  if (!state?.activeUpdate) throw Object.assign(new Error('No update run is active.'), { code: 'UPDATE_NOT_ACTIVE' });
   const config = await pluginConfig(dataDir);
-  if (state.activeUpdate.approvedReview) {
-    throw Object.assign(new Error('The staged plan is already approved; resume update apply.'), { code: 'UPDATE_ALREADY_APPROVED' });
-  }
-  if (state.activeUpdate.attempt >= config.update.maxReviewAttempts) {
-    return { accepted: false, exhausted: true, attempt: state.activeUpdate.attempt, errors: ['Maximum content attempts already reached.'] };
-  }
   const plan = await readJson(flags.plan);
   const metadata = await readProjectMetadata(dataDir, config);
   if (!metadata?.availableStatuses?.length) {
     throw Object.assign(new Error('Kanban statuses are not cached; run check or update prepare first.'), { code: 'KANBAN_STATUS_UNKNOWN' });
   }
-  state.activeUpdate.attempt++;
-  const report = validatePlan(plan, {
-    boundItemIds: state.boundItems.map(item => item.itemId),
-    allowedStatuses: metadata.availableStatuses,
-    maxCharacters: config.update.maxSummaryCharacters,
-    maxWords: config.update.maxSummaryWords
-  });
-  if (!report.valid) {
-    state.activeUpdate.stagedPlan = null;
-    const exhausted = await exhaustIfNeeded(dataDir, state, config, 'static-validation', report.errors.join(' '));
+  return withSessionLock(dataDir, sessionId, async () => {
+    const state = await readState(dataDir, sessionId);
+    if (!state?.activeUpdate) throw Object.assign(new Error('No update run is active.'), { code: 'UPDATE_NOT_ACTIVE' });
+    if (state.pendingPlan?.attempts?.length) {
+      return { accepted: false, paused: true, errors: ['An earlier submission is still unverified.'] };
+    }
+    if (state.activeUpdate.approvedReview) {
+      throw Object.assign(new Error('The staged plan is already approved; resume update apply.'), { code: 'UPDATE_ALREADY_APPROVED' });
+    }
+    if (state.activeUpdate.attempt >= config.update.maxReviewAttempts) {
+      return { accepted: false, exhausted: true, attempt: state.activeUpdate.attempt, errors: ['Maximum content attempts already reached.'] };
+    }
+    state.activeUpdate.attempt++;
+    const report = validatePlan(plan, {
+      boundItemIds: state.boundItems.map(item => item.itemId),
+      allowedStatuses: metadata.availableStatuses,
+      maxCharacters: config.update.maxSummaryCharacters,
+      maxWords: config.update.maxSummaryWords
+    });
+    if (!report.valid) {
+      state.activeUpdate.stagedPlan = null;
+      const exhausted = await exhaustIfNeeded(dataDir, state, config, 'static-validation', report.errors.join(' '));
+      await writeState(dataDir, state);
+      return { accepted: false, exhausted, attempt: state.activeUpdate.attempt, errors: report.errors };
+    }
+    state.activeUpdate.stagedPlan = plan;
+    state.activeUpdate.staticReport = report;
     await writeState(dataDir, state);
-    return { accepted: false, exhausted, attempt: state.activeUpdate.attempt, errors: report.errors };
-  }
-  state.activeUpdate.stagedPlan = plan;
-  state.activeUpdate.staticReport = report;
-  await writeState(dataDir, state);
-  return {
-    accepted: true,
-    attempt: state.activeUpdate.attempt,
-    reviewModel: config.models.review,
-    reviewPromptPath: path.join(ROOT, 'prompts', 'review.md'),
-    staticReport: report,
-    plan
-  };
+    return {
+      accepted: true,
+      attempt: state.activeUpdate.attempt,
+      reviewModel: config.models.review,
+      reviewPromptPath: path.join(ROOT, 'prompts', 'review.md'),
+      staticReport: report,
+      plan
+    };
+  });
 }
 
 async function applyUpdate(dataDir, sessionId, flags) {
-  const state = await readState(dataDir, sessionId);
-  if (!state?.activeUpdate?.stagedPlan) throw Object.assign(new Error('No statically valid plan is staged.'), { code: 'PLAN_NOT_STAGED' });
   const config = await pluginConfig(dataDir);
-  const review = state.activeUpdate.approvedReview || await readJson(flags.review);
-  const reviewReport = validateReview(review);
-  if (!reviewReport.valid) {
-    state.activeUpdate.stagedPlan = null;
-    const exhausted = await exhaustIfNeeded(dataDir, state, config, 'review-output', reviewReport.errors.join(' '));
+  const initial = await readState(dataDir, sessionId);
+  if (!initial?.activeUpdate?.stagedPlan) throw Object.assign(new Error('No statically valid plan is staged.'), { code: 'PLAN_NOT_STAGED' });
+  const review = initial.activeUpdate.approvedReview || await readJson(flags.review);
+  const projectSnapshot = initial.activeUpdate.projectSnapshot || await readProject(config, await githubClient());
+  return withSessionLock(dataDir, sessionId, async () => {
+    const state = await readState(dataDir, sessionId);
+    if (!state?.activeUpdate?.stagedPlan) throw Object.assign(new Error('No statically valid plan is staged.'), { code: 'PLAN_NOT_STAGED' });
+    if (state.pendingPlan?.attempts?.length) {
+      return { applied: false, paused: true, errors: ['An earlier submission is still unverified.'] };
+    }
+    const reviewReport = validateReview(review);
+    if (!reviewReport.valid) {
+      state.activeUpdate.stagedPlan = null;
+      const exhausted = await exhaustIfNeeded(dataDir, state, config, 'review-output', reviewReport.errors.join(' '));
+      await writeState(dataDir, state);
+      return { applied: false, exhausted, errors: reviewReport.errors };
+    }
+    if (review.decision === 'reject') {
+      state.activeUpdate.stagedPlan = null;
+      const exhausted = await exhaustIfNeeded(dataDir, state, config, 'semantic-review', review.reason);
+      await writeState(dataDir, state);
+      return { applied: false, exhausted, errors: [review.reason] };
+    }
+    const runId = state.activeUpdate.runId;
+    state.activeUpdate.approvedReview = review;
     await writeState(dataDir, state);
-    return { applied: false, exhausted, errors: reviewReport.errors };
-  }
-  if (review.decision === 'reject') {
-    state.activeUpdate.stagedPlan = null;
-    const exhausted = await exhaustIfNeeded(dataDir, state, config, 'semantic-review', review.reason);
+    const submission = prepareUpdateOperations(config, state.activeUpdate.projectSnapshot || projectSnapshot, state.activeUpdate.stagedPlan);
+    const pending = storePendingPlan(state, runId, state.activeUpdate.stagedPlan, submission, review);
     await writeState(dataDir, state);
-    return { applied: false, exhausted, errors: [review.reason] };
-  }
-  const runId = state.activeUpdate.runId;
-  state.activeUpdate.approvedReview = review;
-  await writeState(dataDir, state);
-  const projectSnapshot = state.activeUpdate.projectSnapshot || await readProject(config, await githubClient());
-  const submission = prepareUpdateOperations(config, projectSnapshot, state.activeUpdate.stagedPlan);
-  const pending = storePendingPlan(state, runId, state.activeUpdate.stagedPlan, submission, review);
-  await writeState(dataDir, state);
-  return {
-    planned: true,
-    queuedUpdates: pending?.plan.updates.length || 0,
-    queuedOperations: pending?.operations.length || 0,
-    planningCheckpointAdvanced: true
-  };
+    return {
+      planned: true,
+      queuedUpdates: pending?.plan.updates.length || 0,
+      queuedOperations: pending?.operations.length || 0,
+      planningCheckpointAdvanced: true
+    };
+  });
 }
 
 async function sendPendingOperations(dataDir, state, operations) {

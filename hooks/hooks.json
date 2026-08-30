@@ -26,6 +26,11 @@
           {
             "type": "command",
             "command": "node \"${PLUGIN_ROOT}/scripts/hook.mjs\" stop"
+          },
+          {
+            "type": "command",
+            "command": "node \"${PLUGIN_ROOT}/scripts/background-update.mjs\" hook",
+            "async": true
           }
         ]
       }

@@ -48,6 +48,7 @@ test('planning and submission advance separate incremental checkpoints', async t
   appendJournal(state, { kind: 'assistant', turnId: 't1', text: 'Tests pass.' });
   const run = beginUpdate(state, 'run-1');
   assert.equal(run.toSequence, 2);
+  assert.equal(run.useThreadHistory, true);
   storePendingPlan(state, 'run-1', {
     updates: [{ itemId: 'PVTI_1', summary: 'Parser implemented and tested.' }]
   }, {
@@ -56,6 +57,7 @@ test('planning and submission advance separate incremental checkpoints', async t
   }, { decision: 'approve', reason: 'Relevant.' });
   assert.deepEqual(pendingJournal(state), []);
   assert.equal(state.lastPlannedUpdate.sequence, 2);
+  assert.equal(state.fullContextPlannedRevision, state.fullContextRequestedRevision);
   assert.equal(state.lastSuccessfulUpdate, null);
   assert.equal(state.pendingPlan.plan.updates.length, 1);
   completeSubmission(state);
@@ -73,6 +75,7 @@ test('mineprogress prompts are control events and are not journal content', () =
   assert.equal(isControlPrompt('$mineprogress check'), false);
   assert.equal(isControlPrompt('$mineprogress:mineprogress check'), false);
   assert.equal(isControlPrompt('please update the code'), false);
+  assert.equal(isControlPrompt('Stop hook (blocked) feedback: Mineprogress has an update pending. Run node hook.mjs.'), false);
 });
 
 test('mutating commands consume explicit short-lived user authorization', () => {
@@ -104,6 +107,17 @@ test('new journal events do not replace an active recoverable transaction', () =
   assert.deepEqual(resumed.appliedOperations, ['PVTI_1:summary:key']);
   completeUpdate(state, 'run-1');
   assert.equal(pendingJournal(state).length, 1);
+});
+
+test('a binding can start a full-history update without locally journaled context', () => {
+  const state = newStateForTest();
+  bindItem(state, { itemId: 'PVTI_1', title: 'Imported thread task' });
+  const run = beginUpdate(state, 'full-run');
+  assert.equal(run.toSequence, 0);
+  assert.equal(run.useThreadHistory, true);
+  completeUpdate(state, 'full-run');
+  assert.equal(state.fullContextPlannedRevision, 1);
+  assert.equal(beginUpdate(state), null);
 });
 
 test('exhausted updates require an explicit retry', () => {

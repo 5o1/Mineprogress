@@ -34,13 +34,26 @@ export function newState(sessionId, now = new Date().toISOString()) {
     lastPlannedUpdate: null,
     lastSuccessfulUpdate: null,
     pendingPlan: null,
-    activeUpdate: null
+    activeUpdate: null,
+    backgroundRequestedThrough: null,
+    fullContextRequestedRevision: 0,
+    fullContextPlannedRevision: 0
   };
 }
 
 function normalizeState(state) {
   state.lastPlannedUpdate ??= state.lastSuccessfulUpdate || null;
   state.pendingPlan ??= null;
+  state.backgroundRequestedThrough ??= null;
+  if (state.fullContextRequestedRevision === undefined) {
+    state.fullContextRequestedRevision = state.boundItems.length ? 1 : 0;
+  }
+  state.fullContextPlannedRevision ??= 0;
+  if (state.activeUpdate && state.fullContextRequestedRevision > state.fullContextPlannedRevision &&
+      state.activeUpdate.fullContextRevision === undefined) {
+    state.activeUpdate.useThreadHistory = true;
+    state.activeUpdate.fullContextRevision = state.fullContextRequestedRevision;
+  }
   return state;
 }
 
@@ -81,6 +94,7 @@ export function isControlPrompt(text = '') {
   if (/^\s*\$mineprogress(?::|\b)/i.test(prompt)) {
     return /^\s*\$mineprogress:(?:init|create|bind|unbind|update|check|status)\b/i.test(prompt);
   }
+  if (prompt.length > 500 || /<hook_prompt\b|\bstop hook\b|\bfeedback:|\brun node\b/i.test(prompt)) return false;
   return /\bmineprogress\b/i.test(prompt)
     && /(?:init(?:ialize)?|setup|create|bind|unbind|update|check|status|\u521d\u59cb\u5316|\u521b\u5efa|\u7ed1\u5b9a|\u89e3\u7ed1|\u66f4\u65b0|\u68c0\u67e5|\u72b6\u6001)/i.test(prompt);
 }
@@ -89,7 +103,8 @@ export function controlCommandAction(text = '') {
   const normalized = String(text).toLowerCase();
   const explicit = normalized.match(/^\s*\$mineprogress:(init|create|bind|unbind|update|check|status)\b/);
   if (!explicit && /^\s*\$mineprogress(?::|\b)/.test(normalized)) return null;
-  const command = explicit?.[1] || (/\bmineprogress\b/.test(normalized)
+  const natural = isControlPrompt(normalized);
+  const command = explicit?.[1] || (natural && /\bmineprogress\b/.test(normalized)
     ? [['init', /init(?:ialize)?|setup|\u521d\u59cb\u5316/], ['create', /create|\u521b\u5efa/], ['unbind', /unbind|\u89e3\u7ed1/], ['bind', /bind|\u7ed1\u5b9a/], ['update', /update|\u66f4\u65b0/], ['check', /check|\u68c0\u67e5/], ['status', /status|\u72b6\u6001/]]
       .find(([, pattern]) => pattern.test(normalized))?.[0]
     : null);
@@ -144,6 +159,8 @@ export function isControlTurn(state, turnId) {
 export function bindItem(state, item) {
   if (state.boundItems.some(bound => bound.itemId === item.itemId)) return false;
   state.boundItems.push({ itemId: item.itemId, title: item.title || null, boundAt: new Date().toISOString() });
+  state.fullContextRequestedRevision = (state.fullContextRequestedRevision || 0) + 1;
+  state.fullContextPlannedRevision ??= 0;
   return true;
 }
 
@@ -163,15 +180,27 @@ export function pendingJournal(state) {
   return state.journal.filter(event => event.sequence > after);
 }
 
+export function needsFullContext(state) {
+  return (state.fullContextRequestedRevision || 0) > (state.fullContextPlannedRevision || 0);
+}
+
+export function hasPendingPlanning(state) {
+  return needsFullContext(state) || pendingJournal(state).length > 0;
+}
+
 export function beginUpdate(state, runId = crypto.randomUUID()) {
   if (state.activeUpdate) return state.activeUpdate;
   const events = pendingJournal(state);
-  if (!events.length) return null;
-  const toSequence = events.at(-1).sequence;
+  const useThreadHistory = needsFullContext(state);
+  if (!events.length && !useThreadHistory) return null;
+  const checkpoint = state.lastPlannedUpdate?.sequence || state.lastSuccessfulUpdate?.sequence || 0;
+  const toSequence = events.at(-1)?.sequence || checkpoint;
   state.activeUpdate = {
     runId,
-    fromSequence: state.lastPlannedUpdate?.sequence || state.lastSuccessfulUpdate?.sequence || 0,
+    fromSequence: checkpoint,
     toSequence,
+    useThreadHistory,
+    fullContextRevision: useThreadHistory ? state.fullContextRequestedRevision : null,
     attempt: 0,
     stagedPlan: null,
     appliedOperations: [],
@@ -217,6 +246,12 @@ export function completeUpdate(state, runId) {
     throw Object.assign(new Error('The update run is not active'), { code: 'UPDATE_RUN_MISMATCH' });
   }
   const sequence = state.activeUpdate.toSequence;
+  if (state.activeUpdate.fullContextRevision) {
+    state.fullContextPlannedRevision = Math.max(
+      state.fullContextPlannedRevision || 0,
+      state.activeUpdate.fullContextRevision
+    );
+  }
   state.lastPlannedUpdate = { sequence, runId, completedAt: new Date().toISOString() };
   state.journal = state.journal.filter(event => event.sequence > sequence);
   state.activeUpdate = null;

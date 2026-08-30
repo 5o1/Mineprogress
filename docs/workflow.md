@@ -2,10 +2,9 @@
 
 ## Thread lifecycle
 
-Lifecycle hooks stay silent before initialization and in threads with no bound items. An explicit
-Mineprogress command is the only exception, allowing initialization or the first binding. Once a
-binding exists, stable user and assistant turn fields form an incremental journal. SessionEnd retains
-state for a later resume. No hook queries GitHub, and no runtime file is written to the repository:
+Lifecycle hooks stay silent and create no thread state before initialization or in ordinary threads
+with no bound item. A first `create` or `bind` marks the binding for full-history backfill. SessionEnd
+retains state for a later resume, and no runtime file is written to the repository:
 
 - `threads/<session-hash>.json`: bindings, journal, successful checkpoint, and recoverable update.
 - `cache/project-metadata.json`: Project-wide statuses and visibility route shared by all threads.
@@ -23,14 +22,26 @@ update content.
 
 ## Automatic update
 
-Stop incrementally maintains one reviewed but unsubmitted plan:
+Stop first persists the turn with a small local command, then launches a separate asynchronous Hook.
+It returns control without a continuation prompt or foreground model call. The background worker
+incrementally maintains one reviewed but unsubmitted plan:
 
-1. Select only the journal after the last planning checkpoint and the previously approved plan.
+1. For each new binding, fork the current Codex session ephemerally so messages from before plugin
+   installation or binding are available without parsing the unstable transcript file format.
+   Later passes select only the journal after the last planning checkpoint and the approved plan.
 2. Generate one consolidated replacement plan, then locally check fields, bound IDs, actual
    statuses, size, and obvious personal information.
-3. Ask an independent reviewer subagent to detect context dumping, irrelevant expansion, static
-   failures, unsupported claims, and author-identifying data.
+3. Launch a separate ephemeral Codex reviewer process to detect context dumping, irrelevant
+   expansion, static failures, unsupported claims, and author-identifying data.
 4. Store the approved plan without writing GitHub. A rejection regenerates it, up to five rounds.
+
+Both the generator and independent reviewer receive full history during backfill. A successful
+backfill records its own revision checkpoint; failure leaves the revision pending for another Stop.
+The worker disables nested hooks and plugins, serializes one worker per thread, and records failures
+in the plugin error log instead of surfacing them in the foreground conversation. Because Codex may
+cancel unfinished asynchronous hooks on exit, the journal, active run, and pending plan remain
+durable; a later Stop resumes them rather than discarding context. The plugin treats
+`transcript_path` as opaque because Codex does not guarantee its on-disk format.
 
 `SessionEnd` performs no model work. It records an attempt and submits the latest reviewed plan as
 one batched GraphQL mutation, but treats the result as unverified and never removes the queue entry.
