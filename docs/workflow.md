@@ -60,9 +60,12 @@ incrementally maintains one reviewed but unsubmitted plan:
    separate runtime file rather than part of global Skill discovery.
 4. Store the approved plan without writing GitHub. A rejection regenerates it, up to five rounds.
 
-An empty incremental result contains no content to review: Mineprogress advances that run's planning
-checkpoint and retains any previously reviewed submission unchanged. Full-history backfills still
-use the normal validation and review path even when a generator returns an empty plan.
+Each run claims the exact sequence numbers currently awaiting processing and persists a recoverable
+state machine: `claimed` -> `prepared` -> `staged` -> `reviewed`. The reviewer must classify every
+claimed sequence exactly once as included, irrelevant, or missing. Even an unchanged plan follows
+the normal review path; it can advance only when every new event is explicitly found irrelevant.
+New journal events arriving during a run remain outside its fixed batch and are processed by the
+next pass.
 
 The first full-history pass loads `prompts/create.md` for newly created items or `prompts/bind.md`
 for existing items. Later passes load `prompts/update.md`. These files are passed only to ephemeral
@@ -79,12 +82,20 @@ script enforces these constraints independently of generated instructions. The P
 field remains concise.
 
 Both the generator and independent reviewer receive full history during backfill. A successful
-backfill records its own revision checkpoint; failure leaves the revision pending for another Stop.
-The worker disables nested hooks and plugins, serializes one worker per thread, and records failures
-in the plugin error log instead of surfacing them in the foreground conversation. Because Codex may
-cancel unfinished asynchronous hooks on exit, the journal, active run, and pending plan remain
-durable; a later Stop resumes them rather than discarding context. The plugin treats
-`transcript_path` as opaque because Codex does not guarantee its on-disk format.
+backfill records its own revision checkpoint; failure leaves the revision pending. The worker
+disables nested hooks and plugins, serializes one worker per thread, and records failures in the
+plugin error log instead of surfacing them in the foreground conversation. Every phase transition
+is atomically written before the next side effect. A process interruption therefore leaves either
+the previous complete state or the next complete state: preparation can restart generation, a
+staged plan resumes at review, and an approved plan resumes at local queue creation without another
+model call. Only the final atomic write advances the planning checkpoint, prunes the entire claimed
+batch, and installs its pending submission together.
+
+Because Codex may cancel unfinished asynchronous hooks on exit, both `startup` and `resume`
+SessionStart events launch the same serialized background worker. It detects an active run or
+unverified submission and continues automatically without a user command; later Stop events are an
+additional recovery opportunity. The plugin treats `transcript_path` as opaque because Codex does
+not guarantee its on-disk format.
 
 `SessionEnd` performs no model work. It records an attempt and submits the latest reviewed plan as
 one batched GraphQL mutation, but treats the result as unverified and never removes the queue entry.
@@ -96,18 +107,20 @@ performs this check first; if the same process continues receiving turns after S
 asynchronous Stop worker also reconciles the attempted submission before planning newer context.
 Manual `$mineprogress:update` submits and verifies immediately.
 
-An approved no-op advances only the planning checkpoint. Token, permission, network, configuration,
-model, or subagent failures stop immediately without consuming a content retry. An explicit sandbox
-denial requests one elevated retry when an interactive command can request it.
+An approved unchanged plan advances only the planning checkpoint after complete journal coverage.
+Token, permission, network, configuration, model, or subagent failures stop immediately without
+consuming a content retry. An explicit sandbox denial requests one elevated retry when an
+interactive command can request it.
 
 After five rejected rounds, automatic processing remains suspended and the checkpoint stays put.
 Only an explicit user-requested `update retry` starts a fresh run over that same pending journal.
 
 ## Error state
 
-`status` folds JSONL locally, reports whether a reviewed submission is ready or unverified, and
-returns at most 20 unresolved summaries for the current thread. It does not query GitHub or expose
-the complete log, stack traces, tokens, personal paths, or journal.
+`status` folds JSONL locally, reports the journal state-machine phase and whether a reviewed
+submission is ready or unverified, and returns at most 20 unresolved summaries for the current
+thread. It does not query GitHub or expose the complete log, stack traces, tokens, personal paths,
+or journal.
 `status resolve <errorId>` appends a resolution event without rewriting history.
 
 Ended thread caches are retained for 30 days to support resume, then pruned from `PLUGIN_DATA` on a

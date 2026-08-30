@@ -61,5 +61,6 @@ test('status is offline and reports global route and discovered statuses as sepa
   assert.equal(result.kanbanPolicyLine, 'Kanban policy: default Backlog; terminal Shipped.');
   assert.equal(result.statusRules.length, 5);
   assert.ok(result.statusRules.some(line => line.startsWith('Transition Doing -> Shipped:')));
+  assert.equal(result.journalStateLine, 'Journal state: idle; no unprocessed items.');
   assert.equal(result.unresolvedCount, 0);
 });

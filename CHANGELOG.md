@@ -24,6 +24,10 @@ Notable user-visible changes are documented here. Entries follow
 
 ### Fixed
 
+- Replaced eager journal checkpointing with a crash-recoverable `claimed`/`prepared`/`staged`/
+  `reviewed` state machine. Every claimed journal entry now requires explicit reviewer coverage,
+  checkpoints and pruning occur only in the final atomic commit, and startup/resume silently
+  continues interrupted generation, review, local queue creation, or submission reconciliation.
 - Preserved the legacy no-argument configuration loader at the compatibility entrypoint while
   keeping the backend API explicit.
 - Reused canonical boolean-flag parsing when attributing command failures to thread-scoped logs.

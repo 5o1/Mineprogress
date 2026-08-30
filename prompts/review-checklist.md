@@ -30,3 +30,8 @@ Reject the plan if any answer is unsatisfactory:
 13. Status transition: Does every proposed status change follow an exact `statusRules` transition,
     satisfy its evidence boundary, and avoid every stated exclusion without confusing Mineprogress's
     internal reviewer with review of the project work?
+14. Journal completeness: Is every incremental journal sequence classified exactly once? Does each
+    `included` entry point to an item with a real plan delta, each `irrelevant` entry contain no
+    durable project change, and each omitted durable change force `missing` plus rejection?
+15. Interruption safety: Does approval leave no unaccounted journal entry that could be deleted when
+    the reviewed batch is atomically committed after a process restart?

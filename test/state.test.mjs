@@ -16,7 +16,11 @@ import {
   pendingJournal,
   pruneStaleStates,
   readState,
+  recordPreparedUpdate,
+  recordReviewedUpdate,
+  recordStagedUpdate,
   requireCommandAuthorization,
+  resetStagedUpdate,
   retryExhaustedUpdate,
   statePath,
   storePendingPlan,
@@ -107,12 +111,21 @@ test('planning and submission advance separate incremental checkpoints', async t
   const run = beginUpdate(state, 'run-1');
   assert.equal(run.toSequence, 2);
   assert.equal(run.useThreadHistory, true);
+  const plan = {
+    updates: [{ itemId: 'PVTI_1', summary: 'Parser implemented and tested.' }]
+  };
+  const review = approveRun(state, run, plan, [1, 2].map(sequence => ({
+    sequence,
+    disposition: 'included',
+    itemIds: ['PVTI_1'],
+    reason: 'The journal evidence is represented in the changed Project summary.'
+  })));
   storePendingPlan(state, 'run-1', {
     updates: [{ itemId: 'PVTI_1', summary: 'Parser implemented and tested.' }]
   }, {
     projectId: 'PVT_1',
     operations: [{ itemId: 'PVTI_1', fieldId: 'PVTF_UPDATE', value: { text: 'Parser implemented and tested.' } }]
-  }, { decision: 'approve', reason: 'Relevant.' });
+  }, review);
   assert.deepEqual(pendingJournal(state), []);
   assert.equal(state.lastPlannedUpdate.sequence, 2);
   assert.equal(state.fullContextPlannedRevision, state.fullContextRequestedRevision);
@@ -163,8 +176,127 @@ test('new journal events do not replace an active recoverable transaction', () =
   assert.equal(resumed.runId, 'run-1');
   assert.equal(resumed.toSequence, 1);
   assert.deepEqual(resumed.appliedOperations, ['PVTI_1:summary:key']);
+  approveRun(state, resumed, { updates: [] }, [{
+    sequence: 1,
+    disposition: 'irrelevant',
+    itemIds: [],
+    reason: 'The entry contains no durable project requirement or result.'
+  }]);
   completeUpdate(state, 'run-1');
   assert.equal(pendingJournal(state).length, 1);
+});
+
+test('interrupted journal batches resume by phase and advance only after complete review', async t => {
+  const dataDir = await temporaryData(t);
+  const { state } = await openSession(dataDir, 'interrupted');
+  bindItem(state, { itemId: 'PVTI_1', title: 'Parser' });
+  state.fullContextPlannedRevision = state.fullContextRequestedRevision;
+  appendJournal(state, { kind: 'user', turnId: 't1', text: 'Implement the parser.' });
+  appendJournal(state, { kind: 'assistant', turnId: 't1', text: 'Implementation and tests are complete.' });
+  const run = beginUpdate(state, 'run-interrupted');
+  recordPreparedUpdate(state, run.runId, {
+    projectSnapshot: { id: 'PVT_1', fields: [], normalizedItems: [] },
+    referenceLinks: []
+  });
+  await writeState(dataDir, state);
+
+  let restored = await readState(dataDir, 'interrupted');
+  assert.equal(restored.activeUpdate.phase, 'prepared');
+  assert.deepEqual(restored.activeUpdate.journalSequences, [1, 2]);
+  assert.equal(restored.lastPlannedUpdate, null);
+  assert.deepEqual(restored.journal.map(event => event.sequence), [1, 2]);
+
+  recordStagedUpdate(restored, run.runId, {
+    plan: { updates: [{ itemId: 'PVTI_1', summary: 'Parser complete.' }] },
+    staticReport: { valid: true, errors: [] }
+  });
+  await writeState(dataDir, restored);
+  restored = await readState(dataDir, 'interrupted');
+  assert.equal(beginUpdate(restored, 'replacement-run').runId, run.runId);
+  assert.equal(restored.activeUpdate.phase, 'staged');
+
+  recordReviewedUpdate(restored, run.runId, {
+    decision: 'approve',
+    reason: 'Only part of the batch was classified.',
+    journalCoverage: [{
+      sequence: 1,
+      disposition: 'included',
+      itemIds: ['PVTI_1'],
+      reason: 'The first event appears in the changed summary.'
+    }]
+  });
+  assert.throws(() => storePendingPlan(restored, run.runId, restored.activeUpdate.stagedPlan, {
+    projectId: 'PVT_1',
+    operations: []
+  }, restored.activeUpdate.approvedReview), { code: 'JOURNAL_COVERAGE_INCOMPLETE' });
+  assert.equal(restored.pendingPlan, null);
+  assert.throws(() => completeUpdate(restored, run.runId), { code: 'JOURNAL_COVERAGE_INCOMPLETE' });
+  assert.deepEqual(restored.journal.map(event => event.sequence), [1, 2]);
+
+  resetStagedUpdate(restored, run.runId);
+  recordStagedUpdate(restored, run.runId, {
+    plan: { updates: [{ itemId: 'PVTI_1', summary: 'Parser complete.' }] },
+    staticReport: { valid: true, errors: [] }
+  });
+  recordReviewedUpdate(restored, run.runId, {
+    decision: 'approve',
+    reason: 'One durable event is still missing.',
+    journalCoverage: [
+      {
+        sequence: 1,
+        disposition: 'included',
+        itemIds: ['PVTI_1'],
+        reason: 'The first event is represented in the changed Project summary.'
+      },
+      {
+        sequence: 2,
+        disposition: 'missing',
+        itemIds: [],
+        reason: 'The second event is not yet represented in the proposed plan.'
+      }
+    ]
+  });
+  assert.throws(() => completeUpdate(restored, run.runId), { code: 'JOURNAL_COVERAGE_INCOMPLETE' });
+  assert.deepEqual(restored.journal.map(event => event.sequence), [1, 2]);
+
+  resetStagedUpdate(restored, run.runId);
+  recordStagedUpdate(restored, run.runId, {
+    plan: { updates: [{ itemId: 'PVTI_1', summary: 'Parser complete.' }] },
+    staticReport: { valid: true, errors: [] }
+  });
+  recordReviewedUpdate(restored, run.runId, {
+    decision: 'approve',
+    reason: 'Every event in the fixed batch is classified.',
+    journalCoverage: [1, 2].map(sequence => ({
+      sequence,
+      disposition: 'included',
+      itemIds: ['PVTI_1'],
+      reason: 'The event is represented in the changed Project summary.'
+    }))
+  });
+  appendJournal(restored, { kind: 'user', turnId: 't2', text: 'Add another requirement.' });
+  completeUpdate(restored, run.runId);
+  assert.equal(restored.lastPlannedUpdate.sequence, 2);
+  assert.deepEqual(restored.journal.map(event => event.sequence), [3]);
+});
+
+test('legacy approved active runs without coverage resume at review instead of advancing', async t => {
+  const dataDir = await fs.mkdtemp(path.join(os.tmpdir(), 'mineprogress-state-legacy-review-'));
+  t.after(() => fs.rm(dataDir, { recursive: true, force: true }));
+  const { state } = await openSession(dataDir, 'legacy-reviewed');
+  bindItem(state, { itemId: 'PVTI_1', title: 'Parser' });
+  appendJournal(state, { kind: 'assistant', turnId: 'turn-1', text: 'Parser is complete.' });
+  const run = beginUpdate(state, 'legacy-run');
+  run.phase = 'reviewed';
+  run.projectSnapshot = { normalizedItems: [] };
+  run.stagedPlan = { updates: [{ itemId: 'PVTI_1', summary: 'Parser complete.' }] };
+  run.approvedReview = { decision: 'approve', reason: 'Legacy approval.' };
+  await writeState(dataDir, state);
+  const restored = await readState(dataDir, 'legacy-reviewed');
+  assert.equal(restored.activeUpdate.phase, 'staged');
+  assert.equal(restored.activeUpdate.approvedReview, null);
+  assert.equal(restored.journal.length, 1);
+  assert.equal(restored.lastPlannedUpdate, null);
 });
 
 test('a binding can start a full-history update without locally journaled context', () => {
@@ -176,13 +308,16 @@ test('a binding can start a full-history update without locally journaled contex
   const run = beginUpdate(state, 'full-run');
   assert.equal(run.toSequence, 0);
   assert.equal(run.useThreadHistory, true);
+  approveRun(state, run, { updates: [] }, []);
   completeUpdate(state, 'full-run');
   assert.equal(state.fullContextPlannedRevision, 1);
   bindItem(state, { itemId: 'PVTI_2', title: 'Existing item' }, { source: 'bind' });
   assert.equal(state.boundItems[1].bindingSource, 'bind');
   assert.equal(state.boundItems[1].proposalInitialized, true);
   assert.equal(state.boundItems[1].backfillRevision, 2);
-  completeUpdate(state, beginUpdate(state, 'second-full-run').runId);
+  const second = beginUpdate(state, 'second-full-run');
+  approveRun(state, second, { updates: [] }, []);
+  completeUpdate(state, second.runId);
   assert.equal(state.fullContextPlannedRevision, 2);
   assert.equal(beginUpdate(state), null);
 });
@@ -191,12 +326,14 @@ test('successful proposal submission permanently initializes the created-item bo
   const state = newStateForTest();
   bindItem(state, { itemId: 'PVTI_1', title: 'Created item' }, { source: 'create' });
   const run = beginUpdate(state, 'proposal-run');
-  storePendingPlan(state, run.runId, {
+  const proposalPlan = {
     updates: [{ itemId: 'PVTI_1', body: 'Proposal' }]
-  }, {
+  };
+  const review = approveRun(state, run, proposalPlan, []);
+  storePendingPlan(state, run.runId, proposalPlan, {
     projectId: 'PVT_1',
     operations: [{ itemId: 'PVTI_1', kind: 'proposalBody' }]
-  }, { decision: 'approve', reason: 'Valid proposal.' });
+  }, review);
   completeSubmission(state);
   assert.equal(state.boundItems[0].proposalInitialized, true);
 });
@@ -252,4 +389,19 @@ function newStateForTest() {
     pendingPlan: null,
     activeUpdate: null
   };
+}
+
+function approveRun(state, run, plan, journalCoverage) {
+  recordPreparedUpdate(state, run.runId, {
+    projectSnapshot: { id: 'PVT_1', fields: [], normalizedItems: [] },
+    referenceLinks: []
+  });
+  recordStagedUpdate(state, run.runId, {
+    plan,
+    staticReport: { valid: true, errors: [] },
+    proposalBodyItemIds: []
+  });
+  const review = { decision: 'approve', reason: 'The complete batch is represented.', journalCoverage };
+  recordReviewedUpdate(state, run.runId, review);
+  return review;
 }

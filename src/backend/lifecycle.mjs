@@ -2,7 +2,7 @@ import fs from 'node:fs/promises';
 import { assertHostEvent } from '../host/contract.mjs';
 import { calendarDate } from './calendar.mjs';
 import { configPath } from './config.mjs';
-import { reconcilePendingUpdate, submitPendingUpdate } from './application.mjs';
+import { submitPendingUpdate } from './application.mjs';
 import { withSessionLock } from './lock.mjs';
 import {
   appendJournal,
@@ -30,7 +30,6 @@ export async function handleSessionStart(event, runtime) {
   if (!await isInitialized(runtime)) return {};
   const state = await readState(runtime.dataDir, event.sessionId);
   if (!state) return {};
-  if (state.pendingPlan) await reconcilePendingUpdate(runtime.dataDir, event.sessionId, {}, runtime);
   const configuredRetention = Number(runtime.environment?.MINEPROGRESS_STATE_RETENTION_DAYS || 30);
   await pruneStaleStates(runtime.dataDir, {
     retentionDays: Number.isFinite(configuredRetention) && configuredRetention > 0 ? configuredRetention : 30,

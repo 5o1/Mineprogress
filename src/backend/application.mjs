@@ -42,9 +42,12 @@ import {
   completeSubmission,
   confirmSubmissionResponse,
   openSession,
-  pendingJournal,
   readState,
+  recordPreparedUpdate,
+  recordReviewedUpdate,
+  recordStagedUpdate,
   requireCommandAuthorization,
+  resetStagedUpdate,
   retryExhaustedUpdate,
   storePendingPlan,
   unbindItem,
@@ -470,58 +473,61 @@ async function prepareUpdate(dataDir, sessionId, runtime) {
     if (run.exhausted) {
       return { result: { outcome: 'exhausted', runId: run.runId, errorId: run.exhaustionErrorId, reason: 'Content attempts are suspended. Use update retry only after the user explicitly requests another run.' } };
     }
-    if (run.approvedReview?.decision === 'approve' && run.stagedPlan) {
+    if (run.phase === 'reviewed' && run.approvedReview?.decision === 'approve' && run.stagedPlan) {
       return { result: { outcome: 'resume_apply', sessionId, runId: run.runId, reason: 'Store the already approved consolidated plan with update apply; no new review is required.' } };
     }
     if (!state.boundItems.length) {
-      completeUpdate(state, run.runId);
       await writeState(dataDir, state);
-      return { result: { outcome: 'noop', reason: 'No items are bound; checkpoint advanced.' } };
+      return { result: { outcome: 'paused_no_bindings', reason: 'No items are bound; the journal batch remains unprocessed.' } };
     }
     await writeState(dataDir, state);
     return { runId: run.runId };
   });
   if (setup.result) return setup.result;
   const config = await pluginConfig(dataDir, runtime);
-  const project = await readProject(config, await runtime.githubClient());
-  const availableStatuses = projectStatusOptions(project, config).map(option => option.name);
-  const workspaceReferenceLinks = await runtimeReferenceLinks(runtime);
-  const previousMetadata = await readProjectMetadata(dataDir, config);
-  const statusRules = reusableStatusRules(
-    previousMetadata,
-    availableStatuses,
-    config.kanban.defaultStatus
-  );
-  await updateProjectMetadata(dataDir, config, { availableStatuses, statusRules });
-  const state = await withSessionLock(dataDir, sessionId, async () => {
-    const latest = await readState(dataDir, sessionId);
-    if (!latest?.activeUpdate || latest.activeUpdate.runId !== setup.runId) {
-      throw Object.assign(new Error('The background update changed while Project data was loading.'), { code: 'UPDATE_RUN_MISMATCH' });
-    }
-    if (!latest.boundItems.length) {
-      completeUpdate(latest, setup.runId);
-      await writeState(dataDir, latest);
-      return null;
-    }
-    const primaryRepository = primaryRepositoryFromLinks(workspaceReferenceLinks);
-    if (primaryRepository) {
-      for (const binding of latest.boundItems) {
-        binding.primaryRepository ||= primaryRepositoryFromLinks(workspaceReferenceLinks, binding.title);
-      }
-    }
-    latest.activeUpdate.projectSnapshot = {
-      id: project.id,
-      fields: project.fields,
-      normalizedItems: project.normalizedItems,
+  let state = await readState(dataDir, sessionId);
+  let projectSnapshot = state?.activeUpdate?.projectSnapshot || null;
+  let workspaceReferenceLinks = state?.activeUpdate?.referenceLinks || [];
+  if (!projectSnapshot) {
+    const project = await readProject(config, await runtime.githubClient());
+    const availableStatuses = projectStatusOptions(project, config).map(option => option.name);
+    workspaceReferenceLinks = await runtimeReferenceLinks(runtime);
+    const previousMetadata = await readProjectMetadata(dataDir, config);
+    const statusRules = reusableStatusRules(
+      previousMetadata,
       availableStatuses,
-      statusRules
-    };
-    await writeState(dataDir, latest);
-    return latest;
-  });
-  if (!state) return { outcome: 'noop', reason: 'No items remain bound; checkpoint advanced.' };
+      config.kanban.defaultStatus
+    );
+    await updateProjectMetadata(dataDir, config, { availableStatuses, statusRules });
+    state = await withSessionLock(dataDir, sessionId, async () => {
+      const latest = await readState(dataDir, sessionId);
+      if (!latest?.activeUpdate || latest.activeUpdate.runId !== setup.runId) {
+        throw Object.assign(new Error('The background update changed while Project data was loading.'), { code: 'UPDATE_RUN_MISMATCH' });
+      }
+      if (!latest.boundItems.length) return latest;
+      const primaryRepository = primaryRepositoryFromLinks(workspaceReferenceLinks);
+      if (primaryRepository) {
+        for (const binding of latest.boundItems) {
+          binding.primaryRepository ||= primaryRepositoryFromLinks(workspaceReferenceLinks, binding.title);
+        }
+      }
+      projectSnapshot = {
+        id: project.id,
+        fields: project.fields,
+        normalizedItems: project.normalizedItems,
+        availableStatuses,
+        statusRules
+      };
+      recordPreparedUpdate(latest, setup.runId, { projectSnapshot, referenceLinks: workspaceReferenceLinks });
+      await writeState(dataDir, latest);
+      return latest;
+    });
+  }
+  if (!state?.boundItems.length) return { outcome: 'paused_no_bindings', reason: 'No items are bound; the journal batch remains unprocessed.' };
   const run = state.activeUpdate;
-  const boundItems = validationBoundItems(state, run, project.normalizedItems);
+  const availableStatuses = projectSnapshot.availableStatuses || projectStatusOptions(projectSnapshot, config).map(option => option.name);
+  const statusRules = Object.hasOwn(projectSnapshot, 'statusRules') ? projectSnapshot.statusRules : null;
+  const boundItems = validationBoundItems(state, run, projectSnapshot.normalizedItems);
   const promptNames = run.useThreadHistory
     ? [...new Set(boundItems.filter(item => item.backfillRequested)
       .map(item => item.bindingSource === 'create' ? 'create' : 'bind'))]
@@ -533,13 +539,17 @@ async function prepareUpdate(dataDir, sessionId, runtime) {
   const prompt = [metadataPrompt, ...modePrompts].join('\n\n');
   const model = run.useThreadHistory && boundItems.some(item => item.backfillRequested && item.bindingSource === 'create')
     ? config.models.create : config.models.update;
-  const context = pendingJournal(state).filter(event => event.sequence <= run.toSequence);
+  const journalSequences = new Set(run.journalSequences || []);
+  const context = state.journal.filter(event => journalSequences.has(event.sequence));
+  if (context.length !== journalSequences.size) {
+    throw Object.assign(new Error('The active journal batch is incomplete; no checkpoint was advanced.'), { code: 'JOURNAL_BATCH_INCOMPLETE' });
+  }
   const referenceLinks = mergeReferenceLinks(
     extractReferenceLinks(context),
     workspaceReferenceLinks
   );
-  return {
-    outcome: 'generate_and_review',
+  const result = {
+    outcome: run.phase === 'staged' ? 'review_staged' : 'generate_and_review',
     sessionId,
     runId: run.runId,
     attempt: run.attempt + 1,
@@ -565,6 +575,11 @@ async function prepareUpdate(dataDir, sessionId, runtime) {
     context,
     referenceLinks
   };
+  if (run.phase === 'staged') {
+    result.stagedPlan = run.stagedPlan;
+    result.staticReport = run.staticReport;
+  }
+  return result;
 }
 
 function validationBoundItems(state, run, projectItems) {
@@ -618,12 +633,13 @@ async function stageUpdate(dataDir, sessionId, flags, runtime) {
     if (state.activeUpdate.approvedReview) {
       throw Object.assign(new Error('The staged plan is already approved; resume update apply.'), { code: 'UPDATE_ALREADY_APPROVED' });
     }
+    if (state.activeUpdate.phase !== 'prepared') {
+      throw Object.assign(new Error(`Cannot stage an update in phase ${state.activeUpdate.phase}.`), { code: 'UPDATE_PHASE_INVALID' });
+    }
     if (state.activeUpdate.attempt >= config.update.maxReviewAttempts) {
       return { accepted: false, exhausted: true, attempt: state.activeUpdate.attempt, errors: ['Maximum content attempts already reached.'] };
     }
     state.activeUpdate.attempt++;
-    const incrementalNoop = !state.activeUpdate.useThreadHistory &&
-      Array.isArray(plan?.updates) && plan.updates.length === 0;
     const validationItems = validationBoundItems(
       state,
       state.activeUpdate,
@@ -642,30 +658,25 @@ async function stageUpdate(dataDir, sessionId, flags, runtime) {
       maxWords: config.update.maxSummaryWords,
       maxBodyCharacters: config.update.maxBodyCharacters,
       maxCommentCharacters: config.update.maxCommentCharacters,
-      existingPlan: incrementalNoop ? { updates: [] } : state.pendingPlan?.plan || { updates: [] },
+      existingPlan: state.pendingPlan?.plan || { updates: [] },
       statusRules: snapshotHasRules ? projectSnapshot.statusRules : metadata?.statusRules || null
     });
     if (!report.valid) {
-      state.activeUpdate.stagedPlan = null;
+      resetStagedUpdate(state, state.activeUpdate.runId);
       const exhausted = await exhaustIfNeeded(dataDir, state, config, 'static-validation', report.errors.join(' '));
       await writeState(dataDir, state);
       return { accepted: false, exhausted, attempt: state.activeUpdate.attempt, errors: report.errors };
     }
-    if (incrementalNoop) {
-      const runId = state.activeUpdate.runId;
-      const attempt = state.activeUpdate.attempt;
-      const pendingRetained = Boolean(state.pendingPlan);
-      completeUpdate(state, runId);
-      await writeState(dataDir, state);
-      return { accepted: true, noop: true, pendingRetained, attempt, planningCheckpointAdvanced: true };
-    }
     const itemsById = new Map(validationItems.map(item => [item.itemId, item]));
-    state.activeUpdate.proposalBodyItemIds = plan.updates
+    const proposalBodyItemIds = plan.updates
       .filter(update => update.body && (itemsById.get(update.itemId)?.proposalWritable ||
         itemsById.get(update.itemId)?.pendingBodyKind === 'proposalBody'))
       .map(update => update.itemId);
-    state.activeUpdate.stagedPlan = plan;
-    state.activeUpdate.staticReport = report;
+    recordStagedUpdate(state, state.activeUpdate.runId, {
+      plan,
+      staticReport: report,
+      proposalBodyItemIds
+    });
     await writeState(dataDir, state);
     return {
       accepted: true,
@@ -690,22 +701,36 @@ async function applyUpdate(dataDir, sessionId, flags, runtime) {
     if (state.pendingPlan?.attempts?.length) {
       return { applied: false, paused: true, errors: ['An earlier submission is still unverified.'] };
     }
-    const reviewReport = validateReview(review);
+    const journalSequences = new Set(state.activeUpdate.journalSequences || []);
+    const journalEvents = state.journal.filter(event => journalSequences.has(event.sequence));
+    if (journalEvents.length !== journalSequences.size) {
+      throw Object.assign(new Error('The active journal batch is incomplete; no checkpoint was advanced.'), { code: 'JOURNAL_BATCH_INCOMPLETE' });
+    }
+    const reviewReport = validateReview(review, {
+      journalEvents,
+      proposedPlan: state.activeUpdate.stagedPlan,
+      existingPlan: state.pendingPlan?.plan || { updates: [] },
+      boundItemIds: state.boundItems.map(item => item.itemId),
+      requireCoverage: true,
+      useThreadHistory: Boolean(state.activeUpdate.useThreadHistory)
+    });
     if (!reviewReport.valid) {
-      state.activeUpdate.stagedPlan = null;
+      resetStagedUpdate(state, state.activeUpdate.runId);
       const exhausted = await exhaustIfNeeded(dataDir, state, config, 'review-output', reviewReport.errors.join(' '));
       await writeState(dataDir, state);
       return { applied: false, exhausted, errors: reviewReport.errors };
     }
     if (review.decision === 'reject') {
-      state.activeUpdate.stagedPlan = null;
+      resetStagedUpdate(state, state.activeUpdate.runId);
       const exhausted = await exhaustIfNeeded(dataDir, state, config, 'semantic-review', review.reason);
       await writeState(dataDir, state);
       return { applied: false, exhausted, errors: [review.reason] };
     }
     const runId = state.activeUpdate.runId;
-    state.activeUpdate.approvedReview = review;
-    await writeState(dataDir, state);
+    if (state.activeUpdate.phase !== 'reviewed') {
+      recordReviewedUpdate(state, runId, review);
+      await writeState(dataDir, state);
+    }
     const submission = prepareUpdateOperations(
       config,
       state.activeUpdate.projectSnapshot || projectSnapshot,
@@ -849,6 +874,11 @@ async function statusCommand(dataDir, flags, positional, runtime) {
     ? `Kanban policy: default ${config.kanban.defaultStatus}; terminal ${config.kanban.terminalStatuses.length ? config.kanban.terminalStatuses.join(', ') : 'none'}.`
     : 'Kanban policy: default status unknown; rerun init.';
   const statusRules = statusRuleLines(metadata?.statusRules || null);
+  const journalStateLine = state?.activeUpdate
+    ? `Journal state: ${state.activeUpdate.phase}; batch ${state.activeUpdate.journalSequences?.length || 0} event(s) through sequence ${state.activeUpdate.toSequence}.`
+    : state?.journal?.length
+      ? `Journal state: pending; ${state.journal.length} unprocessed item(s).`
+      : 'Journal state: idle; no unprocessed items.';
   const pendingPlanLine = state?.pendingPlan
     ? `Pending submission: ${state.pendingPlan.plan.updates.length} item update(s), ${state.pendingPlan.operations.length} write operation(s), ${state.pendingPlan.submissionStatus}.`
     : 'Pending submission: none.';
@@ -858,6 +888,7 @@ async function statusCommand(dataDir, flags, positional, runtime) {
     kanbanStatusLine,
     kanbanPolicyLine,
     statusRules,
+    journalStateLine,
     pendingPlanLine,
     unresolvedCount: errors.length,
     errors

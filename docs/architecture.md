@@ -1,6 +1,6 @@
 # Architecture
 
-Mineprogress separates the product backend from coding-agent hosts. “Frontend” means a replaceable
+Mineprogress separates the product backend from coding-agent hosts. A frontend is a replaceable
 host adapter, not a graphical interface.
 
 ## Dependency direction
@@ -31,6 +31,18 @@ Adapters import the public surface from `src/backend/index.mjs` and call
 `runBackend(argv, runtime)`. Lifecycle
 adapters call the handlers in `src/backend/lifecycle.mjs` with normalized events. Submission recovery
 is exposed separately through `reconcilePendingUpdate` and `submitPendingUpdate`.
+
+## Durable update state
+
+Thread state is one atomically replaced JSON document. An update claims an immutable set of journal
+sequence numbers and moves through `claimed`, `prepared`, `staged`, and `reviewed`. The journal,
+planning checkpoint, active run, and pending submission are committed together, so a process exit
+cannot expose a checkpoint whose source events were not retained or reviewed. Host adapters should
+resume this state machine automatically at session startup and serialize workers per thread.
+
+GitHub submission is a separate recoverable transaction. Mineprogress persists an unverified
+attempt before network I/O, reconciles remote values and stable operation markers after restart,
+and clears the queue only after complete read-back confirmation.
 
 Prompt files are backend resources selected by use cases, while model invocation remains an adapter
 capability. This keeps generation policy shared without coupling the backend to one model runner.

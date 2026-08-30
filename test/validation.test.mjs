@@ -151,3 +151,63 @@ test('review output cannot rewrite the plan', () => {
   assert.equal(validateReview({ decision: 'approve', reason: 'Relevant and redacted.' }).valid, true);
   assert.equal(validateReview({ decision: 'reject', reason: 'Too broad.', replacement: {} }).valid, false);
 });
+
+test('review coverage must classify every journal entry and link included evidence to a plan delta', () => {
+  const reviewOptions = {
+    journalEvents: [
+      { sequence: 10, text: 'Implement parser.' },
+      { sequence: 11, text: 'What time is it?' }
+    ],
+    proposedPlan: { updates: [{ itemId: 'PVTI_1', summary: 'Parser implemented.' }] },
+    existingPlan: { updates: [] },
+    boundItemIds: ['PVTI_1'],
+    requireCoverage: true
+  };
+  const approved = validateReview({
+    decision: 'approve',
+    reason: 'All journal evidence is classified.',
+    journalCoverage: [{
+      sequence: 10,
+      disposition: 'included',
+      itemIds: ['PVTI_1'],
+      reason: 'The implementation request is represented in the changed summary.'
+    }, {
+      sequence: 11,
+      disposition: 'irrelevant',
+      itemIds: [],
+      reason: 'The time question contains no durable project requirement or result.'
+    }]
+  }, reviewOptions);
+  assert.equal(approved.valid, true);
+
+  const incomplete = validateReview({
+    decision: 'approve',
+    reason: 'One event was accidentally omitted.',
+    journalCoverage: [{
+      sequence: 10,
+      disposition: 'included',
+      itemIds: ['PVTI_1'],
+      reason: 'The implementation request is represented in the changed summary.'
+    }]
+  }, reviewOptions);
+  assert.equal(incomplete.valid, false);
+  assert.match(incomplete.errors.join(' '), /every journal entry/);
+
+  const missing = validateReview({
+    decision: 'approve',
+    reason: 'A durable event is not represented.',
+    journalCoverage: [{
+      sequence: 10,
+      disposition: 'missing',
+      itemIds: [],
+      reason: 'The implementation requirement is absent from the proposed plan.'
+    }, {
+      sequence: 11,
+      disposition: 'irrelevant',
+      itemIds: [],
+      reason: 'The time question contains no durable project requirement or result.'
+    }]
+  }, reviewOptions);
+  assert.equal(missing.valid, false);
+  assert.match(missing.errors.join(' '), /missing from an approved plan/);
+});

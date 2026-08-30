@@ -278,8 +278,93 @@ export function validatePlan(plan, {
   return { valid: errors.length === 0, errors };
 }
 
-export function validateReview(review) {
-  const valid = review && typeof review === 'object' && ['approve', 'reject'].includes(review.decision) &&
-    typeof review.reason === 'string' && Object.keys(review).every(key => ['decision', 'reason'].includes(key));
-  return { valid: Boolean(valid), errors: valid ? [] : ['Review must contain only decision (approve|reject) and reason.'] };
+function normalizedPlanUpdates(plan) {
+  return new Map((plan?.updates || []).map(update => [update.itemId, Object.fromEntries(
+    [...ITEM_KEYS].filter(key => key in update && (key === 'itemId' || update[key] !== null))
+      .map(key => [key, update[key]])
+  )]));
+}
+
+function changedPlanItemIds(proposedPlan, existingPlan) {
+  const proposed = normalizedPlanUpdates(proposedPlan);
+  const existing = normalizedPlanUpdates(existingPlan);
+  return new Set([...new Set([...proposed.keys(), ...existing.keys()])].filter(itemId =>
+    JSON.stringify(proposed.get(itemId) || null) !== JSON.stringify(existing.get(itemId) || null)));
+}
+
+export function validateReview(review, {
+  journalEvents = [],
+  proposedPlan = { updates: [] },
+  existingPlan = { updates: [] },
+  boundItemIds = [],
+  requireCoverage = false,
+  useThreadHistory = false
+} = {}) {
+  const errors = [];
+  if (!review || typeof review !== 'object' || Array.isArray(review)) {
+    return { valid: false, errors: ['Review must be an object.'] };
+  }
+  for (const key of Object.keys(review)) {
+    if (!['decision', 'reason', 'journalCoverage'].includes(key)) errors.push(`Review has forbidden field: ${key}.`);
+  }
+  if (!['approve', 'reject'].includes(review.decision)) errors.push('Review decision must be approve or reject.');
+  if (typeof review.reason !== 'string' || !review.reason.trim()) errors.push('Review reason must be non-empty text.');
+  if (!requireCoverage && review.journalCoverage === undefined) return { valid: errors.length === 0, errors };
+  if (!Array.isArray(review.journalCoverage)) {
+    errors.push('Review journalCoverage must be an array.');
+    return { valid: false, errors };
+  }
+
+  const expected = new Set(journalEvents.map(event => event.sequence));
+  const bound = new Set(boundItemIds);
+  const changed = changedPlanItemIds(proposedPlan, existingPlan);
+  const representedChanges = new Set();
+  const seen = new Set();
+  for (const [index, entry] of review.journalCoverage.entries()) {
+    const prefix = `journalCoverage[${index}]`;
+    if (!entry || typeof entry !== 'object' || Array.isArray(entry)) {
+      errors.push(`${prefix} must be an object.`);
+      continue;
+    }
+    for (const key of Object.keys(entry)) {
+      if (!['sequence', 'disposition', 'itemIds', 'reason'].includes(key)) errors.push(`${prefix} has forbidden field: ${key}.`);
+    }
+    if (!Number.isInteger(entry.sequence) || !expected.has(entry.sequence)) {
+      errors.push(`${prefix}.sequence is not in the active journal batch.`);
+    }
+    if (seen.has(entry.sequence)) errors.push(`${prefix}.sequence is duplicated.`);
+    seen.add(entry.sequence);
+    if (!['included', 'irrelevant', 'missing'].includes(entry.disposition)) {
+      errors.push(`${prefix}.disposition must be included, irrelevant, or missing.`);
+    }
+    if (typeof entry.reason !== 'string' || entry.reason.trim().length < 12 || entry.reason.trim().length > 500) {
+      errors.push(`${prefix}.reason must contain a specific 12-500 character explanation.`);
+    }
+    if (!Array.isArray(entry.itemIds) || new Set(entry.itemIds).size !== entry.itemIds?.length ||
+        entry.itemIds?.some(itemId => typeof itemId !== 'string' || !bound.has(itemId))) {
+      errors.push(`${prefix}.itemIds must contain unique bound item ids.`);
+      continue;
+    }
+    if (entry.disposition === 'included') {
+      if (!entry.itemIds.length) errors.push(`${prefix}.itemIds must identify the changed item for included evidence.`);
+      for (const itemId of entry.itemIds) {
+        representedChanges.add(itemId);
+        if (!changed.has(itemId)) errors.push(`${prefix} claims inclusion in unchanged item ${itemId}.`);
+      }
+    } else if (entry.itemIds.length) {
+      errors.push(`${prefix}.itemIds must be empty unless disposition is included.`);
+    }
+    if (review.decision === 'approve' && entry.disposition === 'missing') {
+      errors.push(`${prefix} marks durable evidence as missing from an approved plan.`);
+    }
+  }
+  if (seen.size !== expected.size || [...expected].some(sequence => !seen.has(sequence))) {
+    errors.push('Review must classify every journal entry in the active batch exactly once.');
+  }
+  if (review.decision === 'approve' && journalEvents.length && !useThreadHistory) {
+    for (const itemId of changed) {
+      if (!representedChanges.has(itemId)) errors.push(`Changed item ${itemId} is not linked to included journal evidence.`);
+    }
+  }
+  return { valid: errors.length === 0, errors };
 }

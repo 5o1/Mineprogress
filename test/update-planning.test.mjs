@@ -6,7 +6,14 @@ import path from 'node:path';
 import { reconcilePendingUpdate, run, submitPendingUpdate } from '../scripts/mineprogress.mjs';
 import { createConfig, saveConfig } from '../scripts/lib/config.mjs';
 import { updateProjectMetadata } from '../scripts/lib/metadata.mjs';
-import { appendJournal, bindItem, openSession, readState, writeState } from '../scripts/lib/state.mjs';
+import {
+  appendJournal,
+  bindItem,
+  openSession,
+  readState,
+  recordReviewedUpdate,
+  writeState
+} from '../scripts/lib/state.mjs';
 import { storedStatusRules } from '../src/backend/status-rules.mjs';
 
 test('reviewed incremental plan is stored before one later GitHub submission', async t => {
@@ -43,7 +50,16 @@ test('reviewed incremental plan is stored before one later GitHub submission', a
   const planFile = path.join(dataDir, 'plan.json');
   const reviewFile = path.join(dataDir, 'review.json');
   await fs.writeFile(planFile, JSON.stringify({ updates: [{ itemId: 'PVTI_1', status: 'Done', summary: 'Parser implemented and tested.' }] }));
-  await fs.writeFile(reviewFile, JSON.stringify({ decision: 'approve', reason: 'Relevant and concise.' }));
+  await fs.writeFile(reviewFile, JSON.stringify({
+    decision: 'approve',
+    reason: 'Relevant and concise.',
+    journalCoverage: [1, 2].map(sequence => ({
+      sequence,
+      disposition: 'included',
+      itemIds: ['PVTI_1'],
+      reason: 'The event is represented in the changed Project status and summary.'
+    }))
+  }));
 
   const previousToken = process.env.GITHUB_TOKEN;
   const previousDisableGh = process.env.MINEPROGRESS_DISABLE_GH_AUTH;
@@ -101,7 +117,20 @@ test('reviewed incremental plan is stored before one later GitHub submission', a
   assert.equal(prepared.boundItems[0].proposalWritable, false);
   await updateProjectMetadata(dataDir, config, { availableStatuses, statusRules: null });
   assert.equal((await run(['update', 'stage', '--plan', planFile, '--session', 'session-1', '--data-dir', dataDir])).accepted, true);
-  const planned = await run(['update', 'apply', '--review', reviewFile, '--session', 'session-1', '--data-dir', dataDir]);
+  const interruptedResume = await run(['update', 'prepare', '--session', 'session-1', '--data-dir', dataDir]);
+  assert.equal(interruptedResume.outcome, 'review_staged');
+  assert.deepEqual(interruptedResume.stagedPlan, JSON.parse(await fs.readFile(planFile, 'utf8')));
+  assert.equal(projectReads, 1);
+  const reviewedState = await readState(dataDir, 'session-1');
+  recordReviewedUpdate(
+    reviewedState,
+    reviewedState.activeUpdate.runId,
+    JSON.parse(await fs.readFile(reviewFile, 'utf8'))
+  );
+  await writeState(dataDir, reviewedState);
+  const reviewedResume = await run(['update', 'prepare', '--session', 'session-1', '--data-dir', dataDir]);
+  assert.equal(reviewedResume.outcome, 'resume_apply');
+  const planned = await run(['update', 'apply', '--session', 'session-1', '--data-dir', dataDir]);
   assert.equal(planned.queuedOperations, 2);
   assert.equal(projectReads, 1);
   assert.equal(submissions, 0);
@@ -115,13 +144,26 @@ test('reviewed incremental plan is stored before one later GitHub submission', a
   const noOpPrepared = await run(['update', 'prepare', '--session', 'session-1', '--data-dir', dataDir]);
   assert.deepEqual(noOpPrepared.existingPlan, originalPendingPlan.plan);
   const noOpFile = path.join(dataDir, 'noop-plan.json');
-  await fs.writeFile(noOpFile, JSON.stringify({ updates: [] }));
-  const noOp = await run(['update', 'stage', '--plan', noOpFile, '--session', 'session-1', '--data-dir', dataDir]);
-  assert.equal(noOp.accepted, true);
-  assert.equal(noOp.noop, true);
-  assert.equal(noOp.pendingRetained, true);
+  await fs.writeFile(noOpFile, JSON.stringify(originalPendingPlan.plan));
+  const noOpStage = await run(['update', 'stage', '--plan', noOpFile, '--session', 'session-1', '--data-dir', dataDir]);
+  assert.equal(noOpStage.accepted, true);
+  const noOpReviewFile = path.join(dataDir, 'noop-review.json');
+  await fs.writeFile(noOpReviewFile, JSON.stringify({
+    decision: 'approve',
+    reason: 'The new journal entry is ordinary Q&A.',
+    journalCoverage: [{
+      sequence: 3,
+      disposition: 'irrelevant',
+      itemIds: [],
+      reason: 'The check request contains no durable project requirement or verified result.'
+    }]
+  }));
+  const noOp = await run(['update', 'apply', '--review', noOpReviewFile, '--session', 'session-1', '--data-dir', dataDir]);
+  assert.equal(noOp.planned, true);
+  assert.equal(noOp.planningCheckpointAdvanced, true);
   const afterNoOp = await readState(dataDir, 'session-1');
-  assert.deepEqual(afterNoOp.pendingPlan, originalPendingPlan);
+  assert.deepEqual(afterNoOp.pendingPlan.plan, originalPendingPlan.plan);
+  assert.equal(afterNoOp.pendingPlan.throughSequence, 3);
   assert.equal(afterNoOp.activeUpdate, null);
   assert.equal(afterNoOp.lastPlannedUpdate.sequence, 3);
 
@@ -137,6 +179,6 @@ test('reviewed incremental plan is stored before one later GitHub submission', a
   assert.equal(submissions, 2);
   const finalState = await readState(dataDir, 'session-1');
   assert.equal(finalState.pendingPlan, null);
-  assert.equal(finalState.lastSuccessfulUpdate.sequence, 2);
+  assert.equal(finalState.lastSuccessfulUpdate.sequence, 3);
   assert.equal(projectReads, 4);
 });

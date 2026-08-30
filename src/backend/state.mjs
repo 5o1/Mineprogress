@@ -8,6 +8,7 @@ import { normalizePrimaryRepository } from './repository-reference.mjs';
 
 const STATE_VERSION = 1;
 const PLAN_FORMAT_VERSION = 4;
+const UPDATE_PHASES = new Set(['claimed', 'prepared', 'staged', 'reviewed']);
 
 export function statePath(dataDir, sessionId) {
   if (!sessionId) throw Object.assign(new Error('sessionId is required'), { code: 'SESSION_ID_REQUIRED' });
@@ -74,6 +75,28 @@ function normalizeState(state) {
       state.activeUpdate.fullContextRevision === undefined) {
     state.activeUpdate.useThreadHistory = true;
     state.activeUpdate.fullContextRevision = state.fullContextRequestedRevision;
+  }
+  if (state.activeUpdate) {
+    state.activeUpdate.journalSequences ??= (state.journal || [])
+      .filter(event => event.sequence > state.activeUpdate.fromSequence &&
+        event.sequence <= state.activeUpdate.toSequence)
+      .map(event => event.sequence);
+    if (!UPDATE_PHASES.has(state.activeUpdate.phase)) {
+      state.activeUpdate.phase = state.activeUpdate.approvedReview && state.activeUpdate.stagedPlan
+        ? 'reviewed'
+          : state.activeUpdate.stagedPlan ? 'staged'
+          : state.activeUpdate.projectSnapshot ? 'prepared' : 'claimed';
+    }
+    if (state.activeUpdate.phase === 'reviewed') {
+      const expected = state.activeUpdate.journalSequences;
+      const covered = state.activeUpdate.approvedReview?.journalCoverage?.map(entry => entry.sequence);
+      if (!Array.isArray(covered) || covered.length !== expected.length ||
+          new Set(covered).size !== expected.length || expected.some(sequence => !covered.includes(sequence))) {
+        state.activeUpdate.approvedReview = null;
+        state.activeUpdate.phase = state.activeUpdate.stagedPlan ? 'staged' :
+          state.activeUpdate.projectSnapshot ? 'prepared' : 'claimed';
+      }
+    }
   }
   return state;
 }
@@ -223,8 +246,10 @@ export function beginUpdate(state, runId = crypto.randomUUID()) {
   const toSequence = events.at(-1)?.sequence || checkpoint;
   state.activeUpdate = {
     runId,
+    phase: 'claimed',
     fromSequence: checkpoint,
     toSequence,
+    journalSequences: events.map(event => event.sequence),
     useThreadHistory,
     fullContextRevision: useThreadHistory ? state.fullContextRequestedRevision : null,
     attempt: 0,
@@ -233,6 +258,61 @@ export function beginUpdate(state, runId = crypto.randomUUID()) {
     startedAt: new Date().toISOString()
   };
   return state.activeUpdate;
+}
+
+function activeRun(state, runId) {
+  if (!state.activeUpdate || state.activeUpdate.runId !== runId) {
+    throw Object.assign(new Error('The update run is not active'), { code: 'UPDATE_RUN_MISMATCH' });
+  }
+  return state.activeUpdate;
+}
+
+export function recordPreparedUpdate(state, runId, { projectSnapshot, referenceLinks = [] }) {
+  const run = activeRun(state, runId);
+  if (!['claimed', 'prepared'].includes(run.phase)) {
+    throw Object.assign(new Error(`Cannot prepare an update in phase ${run.phase}.`), { code: 'UPDATE_PHASE_INVALID' });
+  }
+  run.projectSnapshot = projectSnapshot;
+  run.referenceLinks = referenceLinks;
+  run.phase = 'prepared';
+  return run;
+}
+
+export function recordStagedUpdate(state, runId, {
+  plan,
+  staticReport,
+  proposalBodyItemIds = []
+}) {
+  const run = activeRun(state, runId);
+  if (run.phase !== 'prepared') {
+    throw Object.assign(new Error(`Cannot stage an update in phase ${run.phase}.`), { code: 'UPDATE_PHASE_INVALID' });
+  }
+  run.stagedPlan = plan;
+  run.staticReport = staticReport;
+  run.proposalBodyItemIds = proposalBodyItemIds;
+  run.approvedReview = null;
+  run.phase = 'staged';
+  return run;
+}
+
+export function resetStagedUpdate(state, runId) {
+  const run = activeRun(state, runId);
+  run.stagedPlan = null;
+  run.staticReport = null;
+  run.proposalBodyItemIds = [];
+  run.approvedReview = null;
+  run.phase = run.projectSnapshot ? 'prepared' : 'claimed';
+  return run;
+}
+
+export function recordReviewedUpdate(state, runId, review) {
+  const run = activeRun(state, runId);
+  if (run.phase !== 'staged' || !run.stagedPlan) {
+    throw Object.assign(new Error(`Cannot review an update in phase ${run.phase}.`), { code: 'UPDATE_PHASE_INVALID' });
+  }
+  run.approvedReview = review;
+  run.phase = 'reviewed';
+  return run;
 }
 
 export function retryExhaustedUpdate(state) {
@@ -268,14 +348,24 @@ export async function pruneStaleStates(dataDir, { retentionDays = 30, keepSessio
 }
 
 export function completeUpdate(state, runId) {
-  if (!state.activeUpdate || state.activeUpdate.runId !== runId) {
-    throw Object.assign(new Error('The update run is not active'), { code: 'UPDATE_RUN_MISMATCH' });
+  const run = activeRun(state, runId);
+  if (run.phase !== 'reviewed' || run.approvedReview?.decision !== 'approve') {
+    throw Object.assign(new Error('Only a fully reviewed journal batch can advance its checkpoint.'), { code: 'UPDATE_PHASE_INVALID' });
   }
-  const sequence = state.activeUpdate.toSequence;
-  if (state.activeUpdate.fullContextRevision) {
+  const expected = run.journalSequences || [];
+  const covered = (run.approvedReview.journalCoverage || []).map(entry => entry.sequence);
+  if (covered.length !== expected.length || new Set(covered).size !== expected.length ||
+      expected.some(sequence => !covered.includes(sequence))) {
+    throw Object.assign(new Error('Every journal entry in the active batch must be reviewed before advancing.'), { code: 'JOURNAL_COVERAGE_INCOMPLETE' });
+  }
+  if (run.approvedReview.journalCoverage.some(entry => entry.disposition === 'missing')) {
+    throw Object.assign(new Error('A journal batch with missing durable evidence cannot advance.'), { code: 'JOURNAL_COVERAGE_INCOMPLETE' });
+  }
+  const sequence = run.toSequence;
+  if (run.fullContextRevision) {
     state.fullContextPlannedRevision = Math.max(
       state.fullContextPlannedRevision || 0,
-      state.activeUpdate.fullContextRevision
+      run.fullContextRevision
     );
   }
   state.lastPlannedUpdate = { sequence, runId, completedAt: new Date().toISOString() };
@@ -284,10 +374,20 @@ export function completeUpdate(state, runId) {
 }
 
 export function storePendingPlan(state, runId, plan, submission, review) {
-  if (!state.activeUpdate || state.activeUpdate.runId !== runId) {
-    throw Object.assign(new Error('The update run is not active'), { code: 'UPDATE_RUN_MISMATCH' });
+  const run = activeRun(state, runId);
+  if (run.phase !== 'reviewed' || run.approvedReview?.decision !== 'approve') {
+    throw Object.assign(new Error('Only a fully reviewed journal batch can be stored.'), { code: 'UPDATE_PHASE_INVALID' });
   }
-  const sequence = state.activeUpdate.toSequence;
+  const expected = run.journalSequences || [];
+  const covered = (run.approvedReview.journalCoverage || []).map(entry => entry.sequence);
+  if (covered.length !== expected.length || new Set(covered).size !== expected.length ||
+      expected.some(sequence => !covered.includes(sequence))) {
+    throw Object.assign(new Error('Every journal entry must be reviewed before storing a plan.'), { code: 'JOURNAL_COVERAGE_INCOMPLETE' });
+  }
+  if (run.approvedReview.journalCoverage.some(entry => entry.disposition === 'missing')) {
+    throw Object.assign(new Error('A journal batch with missing durable evidence cannot be stored.'), { code: 'JOURNAL_COVERAGE_INCOMPLETE' });
+  }
+  const sequence = run.toSequence;
   state.pendingPlan = submission.operations.length ? {
     plan,
     projectId: submission.projectId,
@@ -296,7 +396,7 @@ export function storePendingPlan(state, runId, plan, submission, review) {
     approvedAt: new Date().toISOString(),
     submissionStatus: 'ready',
     attempts: [],
-    review
+    review: run.approvedReview
   } : null;
   completeUpdate(state, runId);
   return state.pendingPlan;

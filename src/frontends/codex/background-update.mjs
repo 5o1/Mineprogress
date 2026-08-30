@@ -27,10 +27,22 @@ const PLAN_SCHEMA = {
   }
 };
 const REVIEW_SCHEMA = {
-  type: 'object', additionalProperties: false, required: ['decision', 'reason'],
+  type: 'object', additionalProperties: false, required: ['decision', 'reason', 'journalCoverage'],
   properties: {
     decision: { type: 'string', enum: ['approve', 'reject'] },
-    reason: { type: 'string' }
+    reason: { type: 'string' },
+    journalCoverage: {
+      type: 'array', items: {
+        type: 'object', additionalProperties: false,
+        required: ['sequence', 'disposition', 'itemIds', 'reason'],
+        properties: {
+          sequence: { type: 'integer' },
+          disposition: { type: 'string', enum: ['included', 'irrelevant', 'missing'] },
+          itemIds: { type: 'array', items: { type: 'string' } },
+          reason: { type: 'string' }
+        }
+      }
+    }
   }
 };
 
@@ -105,7 +117,7 @@ export async function runBackgroundUpdate(dataDir, sessionId, {
   try {
     while (true) {
       const prepared = await runCommand(['update', 'prepare', '--session', sessionId, '--data-dir', dataDir]);
-      if (['noop', 'pending_submission'].includes(prepared.outcome)) {
+      if (['noop', 'pending_submission', 'paused_no_bindings'].includes(prepared.outcome)) {
         if (await settleBackgroundRequest(dataDir, sessionId)) continue;
         return prepared;
       }
@@ -120,32 +132,36 @@ export async function runBackgroundUpdate(dataDir, sessionId, {
         if (await settleBackgroundRequest(dataDir, sessionId)) continue;
         return resumed;
       }
-      if (prepared.outcome !== 'generate_and_review') {
+      if (!['generate_and_review', 'review_staged'].includes(prepared.outcome)) {
         throw Object.assign(new Error(`Unsupported background outcome: ${prepared.outcome}`), { code: 'BACKGROUND_OUTCOME_INVALID' });
       }
-      const generated = compactPlan(await invokeModel({
-        dataDir,
-        model: prepared.model.model,
-        reasoningEffort: prepared.model.reasoningEffort,
-        prompt: generationPrompt(prepared),
-        schema: PLAN_SCHEMA,
-        forkSessionId: prepared.useThreadHistory ? sessionId : null
-      }));
-      const planInput = await temporaryJson(dataDir, 'plan', generated);
       let staged;
-      try {
-        staged = await runCommand(['update', 'stage', '--plan', planInput.file, '--session', sessionId, '--data-dir', dataDir]);
-      } finally {
-        await planInput.cleanup();
-      }
-      if (staged.noop) {
-        if (await settleBackgroundRequest(dataDir, sessionId)) continue;
-        return { outcome: 'noop', ...staged };
-      }
-      if (!staged.accepted) {
-        if (staged.paused) return { outcome: 'submission_unverified' };
-        if (staged.exhausted) return { outcome: 'exhausted', errors: staged.errors };
-        continue;
+      if (prepared.outcome === 'review_staged') {
+        staged = {
+          accepted: true,
+          plan: prepared.stagedPlan,
+          staticReport: prepared.staticReport
+        };
+      } else {
+        const generated = compactPlan(await invokeModel({
+          dataDir,
+          model: prepared.model.model,
+          reasoningEffort: prepared.model.reasoningEffort,
+          prompt: generationPrompt(prepared),
+          schema: PLAN_SCHEMA,
+          forkSessionId: prepared.useThreadHistory ? sessionId : null
+        }));
+        const planInput = await temporaryJson(dataDir, 'plan', generated);
+        try {
+          staged = await runCommand(['update', 'stage', '--plan', planInput.file, '--session', sessionId, '--data-dir', dataDir]);
+        } finally {
+          await planInput.cleanup();
+        }
+        if (!staged.accepted) {
+          if (staged.paused) return { outcome: 'submission_unverified' };
+          if (staged.exhausted) return { outcome: 'exhausted', errors: staged.errors };
+          continue;
+        }
       }
       const [reviewContract, reviewChecklist] = await Promise.all([
         fs.readFile(path.join(RESOURCE_ROOT, 'prompts', 'review.md'), 'utf8'),
@@ -194,16 +210,20 @@ async function readHookInput() {
   return raw.trim() ? JSON.parse(raw) : {};
 }
 
-export async function runHook() {
+export async function runHook({
+  input = null,
+  dataDir = null,
+  runUpdate = runBackgroundUpdate
+} = {}) {
   if (process.env.MINEPROGRESS_DISABLE_BACKGROUND_UPDATE === '1') return;
-  const input = await readHookInput();
-  if (input.stop_hook_active) return;
-  const dataDir = resolveCodexDataDir();
-  const sessionId = input.session_id || input.sessionId;
+  const hookInput = input || await readHookInput();
+  if (hookInput.stop_hook_active) return;
+  const resolvedDataDir = dataDir || resolveCodexDataDir();
+  const sessionId = hookInput.session_id || hookInput.sessionId;
   if (!sessionId) return;
-  const state = await withSessionLock(dataDir, sessionId, () => readState(dataDir, sessionId));
-  if (!state?.boundItems.length) return;
-  await runBackgroundUpdate(dataDir, sessionId);
+  const state = await withSessionLock(resolvedDataDir, sessionId, () => readState(resolvedDataDir, sessionId));
+  if (!state || (!state.boundItems.length && !state.pendingPlan && !state.activeUpdate && !state.journal.length)) return;
+  return runUpdate(resolvedDataDir, sessionId);
 }
 
 export async function main() {

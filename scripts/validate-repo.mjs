@@ -50,6 +50,10 @@ if (!hooks.hooks?.SessionStart || !hooks.hooks?.UserPromptSubmit || !hooks.hooks
 if (!hooks.hooks?.Stop?.[0]?.hooks?.some(hook => hook.async === true && hook.command.includes('background-update.mjs'))) {
   errors.push('Stop planning must run as a separate asynchronous hook.');
 }
+if (!hooks.hooks?.SessionStart?.some(group => group.matcher === 'startup|resume' &&
+    group.hooks?.some(hook => hook.async === true && hook.command.includes('background-update.mjs')))) {
+  errors.push('SessionStart must resume unfinished planning in a separate asynchronous hook.');
+}
 for (const group of Object.values(hooks.hooks || {})) {
   for (const matcher of group) {
     for (const hook of matcher.hooks || []) {
