@@ -7,8 +7,11 @@ import { normalizeContentLanguage } from './language.mjs';
 import { normalizePrimaryRepository } from './repository-reference.mjs';
 
 const STATE_VERSION = 1;
-const PLAN_FORMAT_VERSION = 4;
+const PLAN_FORMAT_VERSION = 5;
 const UPDATE_PHASES = new Set(['claimed', 'prepared', 'staged', 'reviewed']);
+const MAX_EVIDENCE_FACTS = 50;
+const MAX_EVIDENCE_TEXT_CHARACTERS = 2000;
+const MAX_PROCESSED_JOURNAL = 200;
 
 export function statePath(dataDir, sessionId) {
   if (!sessionId) throw Object.assign(new Error('sessionId is required'), { code: 'SESSION_ID_REQUIRED' });
@@ -34,6 +37,8 @@ export function newState(sessionId, now = new Date().toISOString()) {
     lastSuccessfulUpdate: null,
     pendingPlan: null,
     activeUpdate: null,
+    unverifiedEvidenceFacts: [],
+    processedJournal: [],
     backgroundRequestedThrough: null,
     fullContextRequestedRevision: 0,
     fullContextPlannedRevision: 0
@@ -52,10 +57,18 @@ function normalizeState(state) {
     item.proposalInitialized ??= item.bindingSource !== 'create';
     item.contentLanguage = normalizeContentLanguage(item.contentLanguage);
     item.primaryRepository = normalizePrimaryRepository(item.primaryRepository, item.title);
+    item.evidenceLedger ||= { revision: 0, facts: [], recoveredAt: null };
+    item.evidenceLedger.revision ??= 0;
+    item.evidenceLedger.facts = normalizeEvidenceFacts(item.evidenceLedger.facts || []).slice(-MAX_EVIDENCE_FACTS);
+    item.evidenceLedger.recoveredAt ??= null;
+    item.statusIntentRevision ??= item.statusIntent?.revision || 0;
+    item.statusIntent ??= null;
   }
   state.lastPlannedUpdate ??= state.lastSuccessfulUpdate || null;
   state.dailySubmissionDate ??= calendarDate(state.updatedAt || state.createdAt);
   state.pendingPlan ??= null;
+  state.unverifiedEvidenceFacts = normalizeEvidenceFacts(state.unverifiedEvidenceFacts || []);
+  state.processedJournal ??= [];
   state.backgroundRequestedThrough ??= null;
   if (state.fullContextRequestedRevision === undefined) {
     state.fullContextRequestedRevision = state.boundItems.length ? 1 : 0;
@@ -205,6 +218,9 @@ export function bindItem(state, item, {
     contentLanguage: normalizedLanguage,
     primaryRepository: normalizedRepository,
     bindingSource: source,
+    evidenceLedger: { revision: 0, facts: [], recoveredAt: null },
+    statusIntentRevision: 0,
+    statusIntent: null,
     backfillRevision,
     boundAt: new Date().toISOString()
   });
@@ -311,8 +327,118 @@ export function recordReviewedUpdate(state, runId, review) {
     throw Object.assign(new Error(`Cannot review an update in phase ${run.phase}.`), { code: 'UPDATE_PHASE_INVALID' });
   }
   run.approvedReview = review;
+  run.evidenceFacts = reviewedEvidenceFacts(state, run, review);
   run.phase = 'reviewed';
   return run;
+}
+
+function normalizeEvidenceFacts(facts) {
+  const seen = new Set();
+  const normalized = [];
+  for (const fact of Array.isArray(facts) ? facts : []) {
+    if (!fact || typeof fact !== 'object' || typeof fact.itemId !== 'string' || typeof fact.factId !== 'string' ||
+        typeof fact.text !== 'string' || !fact.text.trim() || seen.has(`${fact.itemId}:${fact.factId}`)) continue;
+    seen.add(`${fact.itemId}:${fact.factId}`);
+    normalized.push({
+      itemId: fact.itemId,
+      factId: fact.factId,
+      source: String(fact.source || 'unknown'),
+      text: [...fact.text.trim()].slice(0, MAX_EVIDENCE_TEXT_CHARACTERS).join(''),
+      url: typeof fact.url === 'string' ? fact.url : null,
+      timestamp: typeof fact.timestamp === 'string' ? fact.timestamp : null,
+      sequence: Number.isInteger(fact.sequence) ? fact.sequence : null
+    });
+  }
+  return normalized;
+}
+
+function reviewedEvidenceFacts(state, run, review) {
+  const events = new Map((state.journal || []).map(event => [event.sequence, event]));
+  const coveredItems = new Map();
+  for (const entry of review.journalCoverage || []) {
+    if (entry.disposition !== 'included') continue;
+    for (const itemId of entry.itemIds || []) {
+      const sequences = coveredItems.get(itemId) || [];
+      sequences.push(entry.sequence);
+      coveredItems.set(itemId, sequences);
+    }
+  }
+  const facts = [];
+  for (const update of run.stagedPlan?.updates || []) {
+    const sequences = coveredItems.get(update.itemId);
+    if (!sequences?.length) continue;
+    const text = [
+      update.status && `Status: ${update.status}`,
+      update.summary && `Summary:\n${update.summary}`,
+      update.body && `Body:\n${update.body}`,
+      update.comment && `Progress:\n${update.comment}`
+    ].filter(Boolean).join('\n');
+    if (!text) continue;
+    const digest = crypto.createHash('sha256')
+      .update(`${update.itemId}\n${text}`)
+      .digest('hex').slice(0, 20);
+    const lastSequence = Math.max(...sequences);
+    facts.push({
+      itemId: update.itemId,
+      factId: `reviewed-plan:${digest}`,
+      source: 'reviewed-plan',
+      text,
+      url: null,
+      timestamp: events.get(lastSequence)?.timestamp || null,
+      sequence: lastSequence
+    });
+  }
+  return normalizeEvidenceFacts(facts);
+}
+
+export function mergeEvidenceFacts(state, itemId, facts, { recoveredAt = null } = {}) {
+  const binding = state.boundItems.find(item => item.itemId === itemId);
+  if (!binding) return 0;
+  binding.evidenceLedger ||= { revision: 0, facts: [], recoveredAt: null };
+  const existing = normalizeEvidenceFacts(binding.evidenceLedger.facts || []);
+  const additions = normalizeEvidenceFacts((facts || []).map(fact => ({ ...fact, itemId })));
+  const existingIds = new Set(existing.map(fact => fact.factId));
+  const unique = additions.filter(fact => !existingIds.has(fact.factId));
+  if (unique.length) {
+    binding.evidenceLedger.facts = [...existing, ...unique].slice(-MAX_EVIDENCE_FACTS);
+    binding.evidenceLedger.revision = (binding.evidenceLedger.revision || 0) + 1;
+  }
+  if (recoveredAt) binding.evidenceLedger.recoveredAt = recoveredAt;
+  return unique.length;
+}
+
+export function recordStatusIntent(state, itemId, targetStatus, sourceSequence, { role = null } = {}) {
+  const binding = state.boundItems.find(item => item.itemId === itemId);
+  if (!binding || !targetStatus) return false;
+  if (binding.statusIntent?.targetStatus === targetStatus) {
+    binding.statusIntent.sourceSequence ||= sourceSequence || null;
+    binding.statusIntent.role ||= role;
+    return false;
+  }
+  binding.statusIntentRevision = (binding.statusIntentRevision || 0) + 1;
+  binding.statusIntent = {
+    targetStatus,
+    role,
+    revision: binding.statusIntentRevision,
+    sourceSequence: sourceSequence || null,
+    createdAt: new Date().toISOString()
+  };
+  return true;
+}
+
+function planRevisionMap(state, field) {
+  return Object.fromEntries(state.boundItems.map(binding => [binding.itemId,
+    field === 'evidence' ? binding.evidenceLedger?.revision || 0 : binding.statusIntentRevision || 0]));
+}
+
+export function pendingPlanIsCurrent(state) {
+  const pending = state.pendingPlan;
+  if (!pending) return true;
+  if (!pending.evidenceRevisions || !pending.intentRevisions) return Boolean(pending.attempts?.length);
+  const evidence = planRevisionMap(state, 'evidence');
+  const intents = planRevisionMap(state, 'intent');
+  return Object.entries(evidence).every(([itemId, revision]) => pending.evidenceRevisions[itemId] === revision) &&
+    Object.entries(intents).every(([itemId, revision]) => pending.intentRevisions[itemId] === revision);
 }
 
 export function retryExhaustedUpdate(state) {
@@ -368,12 +494,34 @@ export function completeUpdate(state, runId) {
       run.fullContextRevision
     );
   }
+  state.processedJournal ||= [];
+  state.processedJournal.push(...(run.approvedReview.journalCoverage || []).map(entry => {
+    const event = state.journal.find(candidate => candidate.sequence === entry.sequence);
+    return {
+      sequence: entry.sequence,
+      runId,
+      disposition: entry.disposition,
+      itemIds: [...(entry.itemIds || [])],
+      reasonHash: crypto.createHash('sha256').update(String(entry.reason || '')).digest('hex').slice(0, 20),
+      eventHash: event ? crypto.createHash('sha256').update(String(event.text || '')).digest('hex').slice(0, 20) : null,
+      processedAt: new Date().toISOString()
+    };
+  }));
+  state.processedJournal = state.processedJournal.slice(-MAX_PROCESSED_JOURNAL);
+  if (!run.evidenceSecured && run.evidenceFacts?.length) {
+    state.unverifiedEvidenceFacts = normalizeEvidenceFacts([
+      ...state.unverifiedEvidenceFacts,
+      ...run.evidenceFacts
+    ]);
+  }
   state.lastPlannedUpdate = { sequence, runId, completedAt: new Date().toISOString() };
   state.journal = state.journal.filter(event => event.sequence > sequence);
   state.activeUpdate = null;
 }
 
-export function storePendingPlan(state, runId, plan, submission, review) {
+export function storePendingPlan(state, runId, plan, submission, review, {
+  satisfiedStatusIntents = []
+} = {}) {
   const run = activeRun(state, runId);
   if (run.phase !== 'reviewed' || run.approvedReview?.decision !== 'approve') {
     throw Object.assign(new Error('Only a fully reviewed journal batch can be stored.'), { code: 'UPDATE_PHASE_INVALID' });
@@ -388,6 +536,19 @@ export function storePendingPlan(state, runId, plan, submission, review) {
     throw Object.assign(new Error('A journal batch with missing durable evidence cannot be stored.'), { code: 'JOURNAL_COVERAGE_INCOMPLETE' });
   }
   const sequence = run.toSequence;
+  state.unverifiedEvidenceFacts ||= [];
+  const evidenceFacts = normalizeEvidenceFacts([
+    ...state.unverifiedEvidenceFacts,
+    ...(state.pendingPlan?.evidenceFacts || []),
+    ...(run.evidenceFacts || [])
+  ]);
+  state.unverifiedEvidenceFacts = [];
+  run.evidenceSecured = true;
+  const satisfied = satisfiedStatusIntents.map(intent => ({
+    itemId: intent.itemId,
+    targetStatus: intent.targetStatus,
+    revision: intent.revision
+  }));
   state.pendingPlan = submission.operations.length ? {
     plan,
     projectId: submission.projectId,
@@ -396,8 +557,21 @@ export function storePendingPlan(state, runId, plan, submission, review) {
     approvedAt: new Date().toISOString(),
     submissionStatus: 'ready',
     attempts: [],
-    review: run.approvedReview
+    review: run.approvedReview,
+    evidenceFacts,
+    evidenceRevisions: planRevisionMap(state, 'evidence'),
+    intentRevisions: planRevisionMap(state, 'intent'),
+    satisfiedStatusIntents: satisfied
   } : null;
+  if (!submission.operations.length) {
+    for (const fact of evidenceFacts) mergeEvidenceFacts(state, fact.itemId, [fact]);
+    for (const intent of satisfied) {
+      const binding = state.boundItems.find(item => item.itemId === intent.itemId);
+      if (binding?.statusIntent?.revision === intent.revision && binding.statusIntent.targetStatus === intent.targetStatus) {
+        binding.statusIntent = null;
+      }
+    }
+  }
   completeUpdate(state, runId);
   return state.pendingPlan;
 }
@@ -430,6 +604,13 @@ export function completeSubmission(state) {
     .map(operation => operation.itemId));
   for (const binding of state.boundItems) {
     if (proposalItemIds.has(binding.itemId)) binding.proposalInitialized = true;
+  }
+  for (const fact of state.pendingPlan.evidenceFacts || []) mergeEvidenceFacts(state, fact.itemId, [fact]);
+  for (const intent of state.pendingPlan.satisfiedStatusIntents || []) {
+    const binding = state.boundItems.find(item => item.itemId === intent.itemId);
+    if (binding?.statusIntent?.revision === intent.revision && binding.statusIntent.targetStatus === intent.targetStatus) {
+      binding.statusIntent = null;
+    }
   }
   state.lastSuccessfulUpdate = {
     sequence: state.pendingPlan.throughSequence,

@@ -42,7 +42,15 @@ resume this state machine automatically at session startup and serialize workers
 
 GitHub submission is a separate recoverable transaction. Mineprogress persists an unverified
 attempt before network I/O, reconciles remote values and stable operation markers after restart,
-and clears the queue only after complete read-back confirmation.
+and clears the queue only after complete read-back confirmation. Each pending plan records the
+per-item evidence and status-intent revisions from which it was generated; an unattempted stale plan
+is regenerated rather than submitted.
+
+Each binding also owns a compact evidence ledger and a monotonic status-intent revision. Journal
+text is transient: after review, only sanitized plan fields become pending evidence, while the
+processed-journal audit retains hashes and classifications. Verified submission folds pending
+evidence into the ledger. A fresh or migrated cache reconstructs missing evidence only from
+Mineprogress-marked Issue comments or structured Draft progress sections.
 
 Prompt files are backend resources selected by use cases, while model invocation remains an adapter
 capability. This keeps generation policy shared without coupling the backend to one model runner.

@@ -67,6 +67,13 @@ the normal review path; it can advance only when every new event is explicitly f
 New journal events arriving during a run remain outside its fixed batch and are processed by the
 next pass.
 
+An explicit completion statement for a thread with one bound item records a durable `completed`
+status intent. Generation evaluates that intent from the verified per-item evidence ledger, pending
+reviewed evidence, the new journal, and current Project fields. Static validation requires the
+configured terminal status; linked Issues are closed by the resulting scripted operation. The
+intent is cleared only after GitHub confirms both operations. If Project statuses changed, the
+worker first synchronizes configuration and generates script-validated transition rules.
+
 The first full-history pass loads `prompts/create.md` for newly created items or `prompts/bind.md`
 for existing items. Later passes load `prompts/update.md`. These files are passed only to ephemeral
 generator processes and do not enter the foreground thread's global prompt. A created item receives
@@ -106,6 +113,12 @@ Only complete read-back confirmation removes the plan and advances the submissio
 performs this check first; if the same process continues receiving turns after SessionEnd, the next
 asynchronous Stop worker also reconciles the attempted submission before planning newer context.
 Manual `$mineprogress:update` submits and verifies immediately.
+
+That confirmation also moves reviewed plan evidence into the binding ledger. If local evidence is
+absent after installation, migration, or cache recovery, preparation paginates linked Issue comments
+but retains only Mineprogress-marked Requirements and Results; Draft items are recovered from the
+same structured Progress Update sections. Unmanaged comments and complete logs never enter the
+generator input.
 
 An approved unchanged plan advances only the planning checkpoint after complete journal coverage.
 Token, permission, network, configuration, model, or subagent failures stop immediately without

@@ -12,6 +12,7 @@ import {
   openSession,
   readState,
   recordReviewedUpdate,
+  recordStatusIntent,
   writeState
 } from '../scripts/lib/state.mjs';
 import { storedStatusRules } from '../src/backend/status-rules.mjs';
@@ -181,4 +182,136 @@ test('reviewed incremental plan is stored before one later GitHub submission', a
   assert.equal(finalState.pendingPlan, null);
   assert.equal(finalState.lastSuccessfulUpdate.sequence, 3);
   assert.equal(projectReads, 4);
+});
+
+test('update preparation recovers verified managed comments into item evidence once', async t => {
+  const dataDir = await fs.mkdtemp(path.join(os.tmpdir(), 'mineprogress-evidence-recovery-'));
+  t.after(() => fs.rm(dataDir, { recursive: true, force: true }));
+  const config = createConfig({
+    owner: 'octocat', ownerType: 'user', projectNumber: 1,
+    kanban: { defaultStatus: 'Todo', terminalStatuses: ['Done'] }
+  });
+  await saveConfig(path.join(dataDir, 'config.json'), config);
+  const availableStatuses = ['Todo', 'Done'];
+  await updateProjectMetadata(dataDir, config, {
+    availableStatuses,
+    statusRules: storedStatusRules({
+      statuses: availableStatuses.map(name => ({
+        name, enterWhen: `Enter ${name} when its durable evidence boundary is satisfied.`,
+        doNotEnterWhen: `Do not enter ${name} while required evidence remains incomplete.`
+      })),
+      transitions: [{
+        from: 'Todo', to: 'Done', when: 'All required implementation and verification are complete.',
+        doNotApplyWhen: 'Required implementation or verification remains incomplete.'
+      }]
+    }, availableStatuses)
+  });
+  const { state } = await openSession(dataDir, 'session-evidence');
+  bindItem(state, { itemId: 'PVTI_1', title: 'Parser', contentId: 'I_1', contentType: 'issue' });
+  appendJournal(state, { kind: 'user', turnId: 'turn-1', text: 'Summarize the verified progress.' });
+  await writeState(dataDir, state);
+
+  const previousToken = process.env.GITHUB_TOKEN;
+  const previousDisableGh = process.env.MINEPROGRESS_DISABLE_GH_AUTH;
+  const previousFetch = globalThis.fetch;
+  process.env.GITHUB_TOKEN = 'test-token';
+  process.env.MINEPROGRESS_DISABLE_GH_AUTH = '1';
+  let commentReads = 0;
+  globalThis.fetch = async (_url, request) => {
+    const { query } = JSON.parse(request.body);
+    const data = query.includes('query($login') ? { user: { projectV2: {
+      id: 'PVT_1', title: 'Tasks', public: false, repositories: { totalCount: 0, nodes: [] },
+      fields: { nodes: [
+        { id: 'STATUS', name: 'Status', options: [{ id: 'TODO', name: 'Todo' }, { id: 'DONE', name: 'Done' }] },
+        { id: 'UPDATE', name: 'Update' }
+      ] },
+      items: { pageInfo: { hasNextPage: false, endCursor: null }, nodes: [{
+        id: 'PVTI_1', isArchived: false,
+        content: { __typename: 'Issue', id: 'I_1', title: 'Parser', body: '', state: 'OPEN', url: 'https://example.test/issues/1' },
+        fieldValues: { nodes: [{ name: 'Todo', optionId: 'TODO', field: { id: 'STATUS', name: 'Status' } }] }
+      }] }
+    } } } : query.includes('node(id:$id)') ? (() => {
+      commentReads++;
+      return { node: { comments: { pageInfo: { hasNextPage: false, endCursor: null }, nodes: [{
+        body: '## Progress Update — 2026-08-30\n\n### Requirements\n\nImplement parser.\n\n### Results\n\nParser tests passed.\n\n<!-- mineprogress:comment:verified -->',
+        url: 'https://example.test/issues/1#comment', createdAt: '2026-08-30T00:00:00Z'
+      }] } } };
+    })() : null;
+    if (!data) throw new Error('Unexpected GraphQL operation');
+    return { ok: true, status: 200, json: async () => ({ data }) };
+  };
+  t.after(() => {
+    globalThis.fetch = previousFetch;
+    if (previousToken === undefined) delete process.env.GITHUB_TOKEN; else process.env.GITHUB_TOKEN = previousToken;
+    if (previousDisableGh === undefined) delete process.env.MINEPROGRESS_DISABLE_GH_AUTH; else process.env.MINEPROGRESS_DISABLE_GH_AUTH = previousDisableGh;
+  });
+
+  const prepared = await run(['update', 'prepare', '--session', 'session-evidence', '--data-dir', dataDir]);
+  assert.equal(commentReads, 1);
+  assert.equal(prepared.boundItems[0].evidenceLedger.facts.length, 1);
+  assert.match(prepared.boundItems[0].evidenceLedger.facts[0].text, /Parser tests passed/u);
+  const stored = await readState(dataDir, 'session-evidence');
+  assert.ok(stored.boundItems[0].evidenceLedger.recoveredAt);
+});
+
+test('submission response persistence preserves journal and intent written during network I/O', async t => {
+  const dataDir = await fs.mkdtemp(path.join(os.tmpdir(), 'mineprogress-submit-concurrency-'));
+  t.after(() => fs.rm(dataDir, { recursive: true, force: true }));
+  await saveConfig(path.join(dataDir, 'config.json'), createConfig({
+    owner: 'octocat', ownerType: 'user', projectNumber: 1,
+    kanban: { defaultStatus: 'Todo', terminalStatuses: ['Done'] }
+  }));
+  const { state } = await openSession(dataDir, 'session-concurrency');
+  bindItem(state, { itemId: 'PVTI_1', title: 'Parser' });
+  state.pendingPlan = {
+    plan: { updates: [{ itemId: 'PVTI_1', summary: 'Parser ready.' }] },
+    projectId: 'PVT_1',
+    operations: [{
+      key: 'PVTI_1:summary:ready', kind: 'summary', itemId: 'PVTI_1', fieldId: 'UPDATE',
+      before: null, expected: 'Parser ready.', value: { text: 'Parser ready.' }
+    }],
+    throughSequence: 0, submissionStatus: 'ready', attempts: [],
+    evidenceFacts: [], evidenceRevisions: { PVTI_1: 0 }, intentRevisions: { PVTI_1: 0 },
+    satisfiedStatusIntents: []
+  };
+  await writeState(dataDir, state);
+
+  const previousToken = process.env.GITHUB_TOKEN;
+  const previousDisableGh = process.env.MINEPROGRESS_DISABLE_GH_AUTH;
+  const previousFetch = globalThis.fetch;
+  process.env.GITHUB_TOKEN = 'test-token';
+  process.env.MINEPROGRESS_DISABLE_GH_AUTH = '1';
+  let releaseMutation;
+  let mutationStarted;
+  const started = new Promise(resolve => { mutationStarted = resolve; });
+  const released = new Promise(resolve => { releaseMutation = resolve; });
+  globalThis.fetch = async (_url, request) => {
+    const { query } = JSON.parse(request.body);
+    assert.match(query, /operation0:updateProjectV2ItemFieldValue/u);
+    mutationStarted();
+    await released;
+    return {
+      ok: true, status: 200,
+      json: async () => ({ data: { operation0: { projectV2Item: { id: 'PVTI_1' } } } })
+    };
+  };
+  t.after(() => {
+    globalThis.fetch = previousFetch;
+    if (previousToken === undefined) delete process.env.GITHUB_TOKEN; else process.env.GITHUB_TOKEN = previousToken;
+    if (previousDisableGh === undefined) delete process.env.MINEPROGRESS_DISABLE_GH_AUTH; else process.env.MINEPROGRESS_DISABLE_GH_AUTH = previousDisableGh;
+  });
+
+  const submitting = submitPendingUpdate(dataDir, 'session-concurrency', { verify: false });
+  await started;
+  const duringRequest = await readState(dataDir, 'session-concurrency');
+  const event = appendJournal(duringRequest, { kind: 'user', turnId: 'turn-2', text: '项目结束了。' });
+  recordStatusIntent(duringRequest, 'PVTI_1', 'Done', event.sequence, { role: 'completed' });
+  await writeState(dataDir, duringRequest);
+  releaseMutation();
+  await submitting;
+
+  const restored = await readState(dataDir, 'session-concurrency');
+  assert.deepEqual(restored.journal.map(entry => entry.text), ['项目结束了。']);
+  assert.equal(restored.boundItems[0].statusIntent.targetStatus, 'Done');
+  assert.ok(restored.pendingPlan.attempts[0].responseReceivedAt);
 });

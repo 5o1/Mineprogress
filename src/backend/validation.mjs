@@ -173,7 +173,8 @@ export function validatePlan(plan, {
   maxBodyCharacters = 60000,
   maxCommentCharacters = 10000,
   existingPlan = { updates: [] },
-  statusRules = null
+  statusRules = null,
+  terminalStatuses = []
 }) {
   const errors = [];
   if (!plan || typeof plan !== 'object' || Array.isArray(plan)) return { valid: false, errors: ['Plan must be a JSON object.'] };
@@ -274,6 +275,16 @@ export function validatePlan(plan, {
   }
   if (Array.isArray(plan.updates)) {
     errors.push(...validatePendingPreservation(plan, existingPlan, allowedIds, itemsById));
+    const updatesById = new Map(plan.updates.map(update => [update.itemId, update]));
+    for (const item of normalizedBoundItems) {
+      const targetStatus = item.statusIntent?.targetStatus;
+      if (!targetStatus) continue;
+      const terminalIssueOpen = terminalStatuses.includes(targetStatus) &&
+        item.contentType === 'issue' && item.contentState !== 'CLOSED';
+      if ((item.status !== targetStatus || terminalIssueOpen) && updatesById.get(item.itemId)?.status !== targetStatus) {
+        errors.push(`updates for ${item.itemId} must satisfy the durable status intent ${targetStatus}.`);
+      }
+    }
   }
   return { valid: errors.length === 0, errors };
 }

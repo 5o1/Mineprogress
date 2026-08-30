@@ -64,6 +64,32 @@ test('static plan validation permits only generated status transitions', () => {
   assert.match(report.errors.join(' '), /no generated transition rule from In progress to Done/);
 });
 
+test('durable completion intent requires the terminal status and Issue closure operation', () => {
+  const completionOptions = {
+    ...options,
+    boundItems: [{
+      itemId: 'PVTI_1', status: 'In progress', contentType: 'issue', contentState: 'OPEN',
+      statusIntent: { targetStatus: 'Done', revision: 1 }
+    }],
+    terminalStatuses: ['Done'],
+    statusRules: { transitions: [{
+      from: 'In progress', to: 'Done',
+      when: 'Required implementation and verification evidence is complete.',
+      doNotApplyWhen: 'Required work or verification evidence remains incomplete.'
+    }] }
+  };
+  const omitted = validatePlan({ updates: [{ itemId: 'PVTI_1', summary: 'Work is complete.' }] }, completionOptions);
+  assert.equal(omitted.valid, false);
+  assert.match(omitted.errors.join(' '), /must satisfy the durable status intent Done/u);
+  assert.equal(validatePlan({ updates: [{ itemId: 'PVTI_1', status: 'Done' }] }, completionOptions).valid, true);
+
+  const remotelyComplete = {
+    ...completionOptions,
+    boundItems: [{ ...completionOptions.boundItems[0], status: 'Done', contentState: 'CLOSED' }]
+  };
+  assert.equal(validatePlan({ updates: [] }, remotelyComplete).valid, true);
+});
+
 test('static plan validation rejects unbound writes, extra fields, and personal data', () => {
   const report = validatePlan({ updates: [{ itemId: 'PVTI_2', title: 'Changed', summary: 'Email me@example.com' }] }, options);
   assert.equal(report.valid, false);

@@ -5,6 +5,19 @@ Notable user-visible changes are documented here. Entries follow
 
 ## [Unreleased]
 
+### Fixed
+
+- Separated transient journal input from a per-item evidence ledger. Verified reviewed plans are
+  folded into the ledger only after GitHub read-back, while a missing local ledger is reconstructed
+  from compact Mineprogress-managed Issue comments or Draft progress sections.
+- Persisted explicit completion intent until the configured terminal Project status and linked
+  Issue closure are verified. Plans carry evidence and intent revisions, so an unattempted stale
+  plan cannot be submitted after newer state arrives.
+- Made submission attempt and response persistence reload the latest locked thread state instead of
+  overwriting journal events that arrived during GitHub network I/O.
+- Generate and validate missing Project status rules automatically before processing a durable
+  status intent, including after remote status configuration changes.
+
 ## [0.6.0] - 2026-08-30
 
 ### Changed

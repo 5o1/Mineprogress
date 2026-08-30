@@ -19,6 +19,8 @@ import {
   inspectCreationPolicy,
   prepareUpdateOperations,
   projectStatusOptions,
+  readManagedDraftEvidence,
+  readManagedEvidence,
   readProject,
   reconcilePreparedOperations
 } from './github-projects.mjs';
@@ -42,9 +44,12 @@ import {
   completeSubmission,
   confirmSubmissionResponse,
   openSession,
+  mergeEvidenceFacts,
+  pendingPlanIsCurrent,
   readState,
   recordPreparedUpdate,
   recordReviewedUpdate,
+  recordStatusIntent,
   recordStagedUpdate,
   requireCommandAuthorization,
   resetStagedUpdate,
@@ -485,11 +490,25 @@ async function prepareUpdate(dataDir, sessionId, runtime) {
   });
   if (setup.result) return setup.result;
   const config = await pluginConfig(dataDir, runtime);
-  let state = await readState(dataDir, sessionId);
+  let state = await withSessionLock(dataDir, sessionId, async () => {
+    const latest = await readState(dataDir, sessionId);
+    let changed = false;
+    for (const binding of latest?.boundItems || []) {
+      if (binding.statusIntent?.role !== 'completed') continue;
+      const completedStatus = config.kanban.statusRoles.completed || config.kanban.terminalStatuses[0];
+      if (completedStatus && binding.statusIntent.targetStatus !== completedStatus) {
+        recordStatusIntent(latest, binding.itemId, completedStatus, binding.statusIntent.sourceSequence, { role: 'completed' });
+        changed = true;
+      }
+    }
+    if (changed) await writeState(dataDir, latest);
+    return latest;
+  });
   let projectSnapshot = state?.activeUpdate?.projectSnapshot || null;
   let workspaceReferenceLinks = state?.activeUpdate?.referenceLinks || [];
   if (!projectSnapshot) {
-    const project = await readProject(config, await runtime.githubClient());
+    const client = await runtime.githubClient();
+    const project = await readProject(config, client);
     const availableStatuses = projectStatusOptions(project, config).map(option => option.name);
     workspaceReferenceLinks = await runtimeReferenceLinks(runtime);
     const previousMetadata = await readProjectMetadata(dataDir, config);
@@ -499,6 +518,18 @@ async function prepareUpdate(dataDir, sessionId, runtime) {
       config.kanban.defaultStatus
     );
     await updateProjectMetadata(dataDir, config, { availableStatuses, statusRules });
+    const projectItems = new Map(project.normalizedItems.map(item => [item.itemId, item]));
+    const recoveredEvidence = new Map();
+    for (const binding of state.boundItems.filter(item => !item.evidenceLedger?.recoveredAt)) {
+      const item = projectItems.get(binding.itemId);
+      let facts = [];
+      if (item?.contentId && ['issue', 'pullRequest'].includes(item.contentType)) {
+        facts = await readManagedEvidence(client, item.contentId);
+      } else if (item?.contentType === 'draft') {
+        facts = readManagedDraftEvidence(item.body, item.url);
+      }
+      recoveredEvidence.set(binding.itemId, facts);
+    }
     state = await withSessionLock(dataDir, sessionId, async () => {
       const latest = await readState(dataDir, sessionId);
       if (!latest?.activeUpdate || latest.activeUpdate.runId !== setup.runId) {
@@ -511,6 +542,14 @@ async function prepareUpdate(dataDir, sessionId, runtime) {
           binding.primaryRepository ||= primaryRepositoryFromLinks(workspaceReferenceLinks, binding.title);
         }
       }
+      const recoveredAt = new Date().toISOString();
+      for (const [itemId, facts] of recoveredEvidence) {
+        mergeEvidenceFacts(latest, itemId, facts, { recoveredAt });
+      }
+      if (latest.boundItems.some(item => item.statusIntent) && !statusRules) {
+        await writeState(dataDir, latest);
+        return latest;
+      }
       projectSnapshot = {
         id: project.id,
         fields: project.fields,
@@ -522,6 +561,15 @@ async function prepareUpdate(dataDir, sessionId, runtime) {
       await writeState(dataDir, latest);
       return latest;
     });
+    if (state?.boundItems.some(item => item.statusIntent) && !statusRules) {
+      return {
+        outcome: 'status_rules_required',
+        sessionId,
+        model: config.models.update,
+        preferFastMode: config.models.preferFastMode,
+        generation: statusRuleGeneration(config, availableStatuses, null, 'required_for_status_intent')
+      };
+    }
   }
   if (!state?.boundItems.length) return { outcome: 'paused_no_bindings', reason: 'No items are bound; the journal batch remains unprocessed.' };
   const run = state.activeUpdate;
@@ -600,7 +648,17 @@ function validationBoundItems(state, run, projectItems) {
       bindingSource: binding?.bindingSource || 'bind',
       backfillRequested,
       proposalWritable: Boolean(backfillRequested && binding?.bindingSource === 'create' && !binding.proposalInitialized),
-      pendingBodyKind: pendingBodyKinds.get(item.itemId) || null
+      pendingBodyKind: pendingBodyKinds.get(item.itemId) || null,
+      evidenceLedger: {
+        revision: binding?.evidenceLedger?.revision || 0,
+        recoveredAt: binding?.evidenceLedger?.recoveredAt || null,
+        facts: (binding?.evidenceLedger?.facts || []).slice(-12)
+      },
+      pendingEvidenceFacts: [
+        ...(state.unverifiedEvidenceFacts || []),
+        ...(state.pendingPlan?.evidenceFacts || [])
+      ].filter(fact => fact.itemId === item.itemId),
+      statusIntent: binding?.statusIntent || null
     };
   });
 }
@@ -659,7 +717,8 @@ async function stageUpdate(dataDir, sessionId, flags, runtime) {
       maxBodyCharacters: config.update.maxBodyCharacters,
       maxCommentCharacters: config.update.maxCommentCharacters,
       existingPlan: state.pendingPlan?.plan || { updates: [] },
-      statusRules: snapshotHasRules ? projectSnapshot.statusRules : metadata?.statusRules || null
+      statusRules: snapshotHasRules ? projectSnapshot.statusRules : metadata?.statusRules || null,
+      terminalStatuses: config.kanban.terminalStatuses
     });
     if (!report.valid) {
       resetStagedUpdate(state, state.activeUpdate.runId);
@@ -740,7 +799,26 @@ async function applyUpdate(dataDir, sessionId, flags, runtime) {
         repositoryReferences: state.boundItems.map(item => ({ itemId: item.itemId, ...item.primaryRepository }))
       }
     );
-    const pending = storePendingPlan(state, runId, state.activeUpdate.stagedPlan, submission, review);
+    const updatesById = new Map(state.activeUpdate.stagedPlan.updates.map(update => [update.itemId, update]));
+    const projectItems = new Map((state.activeUpdate.projectSnapshot || projectSnapshot).normalizedItems
+      .map(item => [item.itemId, item]));
+    const satisfiedStatusIntents = state.boundItems.flatMap(binding => {
+      const intent = binding.statusIntent;
+      if (!intent) return [];
+      const item = projectItems.get(binding.itemId);
+      const planned = updatesById.get(binding.itemId)?.status === intent.targetStatus;
+      const alreadySatisfied = item?.status === intent.targetStatus &&
+        (!config.kanban.terminalStatuses.includes(intent.targetStatus) ||
+          item.contentType !== 'issue' || item.contentState === 'CLOSED');
+      return planned || alreadySatisfied ? [{
+        itemId: binding.itemId,
+        targetStatus: intent.targetStatus,
+        revision: intent.revision
+      }] : [];
+    });
+    const pending = storePendingPlan(state, runId, state.activeUpdate.stagedPlan, submission, review, {
+      satisfiedStatusIntents
+    });
     await writeState(dataDir, state);
     return {
       planned: true,
@@ -751,12 +829,32 @@ async function applyUpdate(dataDir, sessionId, flags, runtime) {
   });
 }
 
-async function sendPendingOperations(dataDir, state, operations, runtime) {
-  const attempt = beginSubmissionAttempt(state, operations.map(operation => operation.key));
-  await writeState(dataDir, state);
-  const result = await applyPreparedOperations(await runtime.githubClient(), state.pendingPlan.projectId, operations);
-  confirmSubmissionResponse(state, attempt.attemptId);
-  await writeState(dataDir, state);
+async function sendPendingOperations(dataDir, sessionId, operations, runtime) {
+  const operationKeys = new Set(operations.map(operation => operation.key));
+  const transaction = await withSessionLock(dataDir, sessionId, async () => {
+    const latest = await readState(dataDir, sessionId);
+    if (!latest?.pendingPlan) throw Object.assign(new Error('No reviewed plan is pending.'), { code: 'PLAN_NOT_PENDING' });
+    if (!latest.pendingPlan.attempts?.length && !pendingPlanIsCurrent(latest)) {
+      throw Object.assign(new Error('The reviewed plan is stale and must be regenerated.'), { code: 'PLAN_STALE' });
+    }
+    const currentOperations = latest.pendingPlan.operations.filter(operation => operationKeys.has(operation.key));
+    if (currentOperations.length !== operationKeys.size) {
+      throw Object.assign(new Error('The pending operation set changed before submission.'), { code: 'PLAN_STALE' });
+    }
+    const attempt = beginSubmissionAttempt(latest, currentOperations.map(operation => operation.key));
+    await writeState(dataDir, latest);
+    return { attemptId: attempt.attemptId, projectId: latest.pendingPlan.projectId, operations: currentOperations };
+  });
+  const result = await applyPreparedOperations(
+    await runtime.githubClient(),
+    transaction.projectId,
+    transaction.operations
+  );
+  await withSessionLock(dataDir, sessionId, async () => {
+    const latest = await readState(dataDir, sessionId);
+    confirmSubmissionResponse(latest, transaction.attemptId);
+    await writeState(dataDir, latest);
+  });
   return result;
 }
 
@@ -764,38 +862,50 @@ export async function reconcilePendingUpdate(dataDir, sessionId, { retry = true 
   const state = await readState(dataDir, sessionId);
   if (!state) return { submitted: false, reason: 'Thread cache does not exist.' };
   if (!state.pendingPlan) return { submitted: false, reason: 'No reviewed plan is pending.' };
+  if (!state.pendingPlan.attempts?.length && !pendingPlanIsCurrent(state)) {
+    return { submitted: false, stale: true, queueRetained: true, reason: 'The reviewed plan is stale and must be regenerated before submission.' };
+  }
   requireRuntime(runtime);
   const config = await pluginConfig(dataDir, runtime);
   const client = await runtime.githubClient();
   let project = await readProject(config, client);
   let report = await reconcilePreparedOperations(project, state.pendingPlan.operations, { client });
   if (retry && report.retryable.length) {
-    await sendPendingOperations(dataDir, state, report.retryable, runtime);
+    await sendPendingOperations(dataDir, sessionId, report.retryable, runtime);
     project = await readProject(config, client);
     report = await reconcilePreparedOperations(project, state.pendingPlan.operations, { client });
   }
   if (!report.retryable.length && !report.conflicts.length) {
     const writeOperations = report.confirmed.length;
-    completeSubmission(state);
-    await writeState(dataDir, state);
+    await withSessionLock(dataDir, sessionId, async () => {
+      const latest = await readState(dataDir, sessionId);
+      if (!latest?.pendingPlan) return;
+      completeSubmission(latest);
+      await writeState(dataDir, latest);
+    });
     return { submitted: true, verified: true, writeOperations, checkpointAdvanced: true };
   }
-  state.pendingPlan.lastReconciliation = {
-    checkedAt: new Date().toISOString(),
-    confirmed: report.confirmed.map(operation => operation.key),
-    retryable: report.retryable.map(operation => operation.key),
-    conflicts: report.conflicts.map(({ operation }) => operation.key)
-  };
-  await writeState(dataDir, state);
-  if (report.conflicts.length && !state.pendingPlan.conflictLoggedAt) {
+  const shouldLogConflict = await withSessionLock(dataDir, sessionId, async () => {
+    const latest = await readState(dataDir, sessionId);
+    if (!latest?.pendingPlan) return false;
+    latest.pendingPlan.lastReconciliation = {
+      checkedAt: new Date().toISOString(),
+      confirmed: report.confirmed.map(operation => operation.key),
+      retryable: report.retryable.map(operation => operation.key),
+      conflicts: report.conflicts.map(({ operation }) => operation.key)
+    };
+    const shouldLog = Boolean(report.conflicts.length && !latest.pendingPlan.conflictLoggedAt);
+    if (shouldLog) latest.pendingPlan.conflictLoggedAt = new Date().toISOString();
+    await writeState(dataDir, latest);
+    return shouldLog;
+  });
+  if (shouldLogConflict) {
     await logError(dataDir, {
       sessionId,
       stage: 'submission-reconciliation',
       errorCode: 'SUBMISSION_CONFLICT',
       message: `${report.conflicts.length} pending Project field operation(s) conflict with external changes.`
     });
-    state.pendingPlan.conflictLoggedAt = new Date().toISOString();
-    await writeState(dataDir, state);
   }
   return {
     submitted: false,
@@ -810,11 +920,14 @@ export async function submitPendingUpdate(dataDir, sessionId, { verify = true } 
   const state = await readState(dataDir, sessionId);
   if (!state) return { submitted: false, reason: 'Thread cache does not exist.' };
   if (!state.pendingPlan) return { submitted: false, reason: 'No reviewed plan is pending.' };
+  if (!state.pendingPlan.attempts?.length && !pendingPlanIsCurrent(state)) {
+    return { submitted: false, stale: true, queueRetained: true, reason: 'The reviewed plan is stale and must be regenerated before submission.' };
+  }
   if (state.pendingPlan.attempts?.length) {
     if (verify) return reconcilePendingUpdate(dataDir, sessionId, {}, runtime);
     return { submitted: false, verified: false, reason: 'An earlier submission is still unverified.', queueRetained: true };
   }
-  const result = await sendPendingOperations(dataDir, state, state.pendingPlan.operations, runtime);
+  const result = await sendPendingOperations(dataDir, sessionId, state.pendingPlan.operations, runtime);
   if (!verify) {
     return { submitted: true, verified: false, fieldUpdates: result.applied, queueRetained: true };
   }

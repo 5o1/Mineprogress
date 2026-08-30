@@ -236,6 +236,50 @@ test('SessionStart background entry detects and resumes a persisted active trans
   assert.deepEqual(calls, [{ actualDataDir: dataDir, sessionId: 'session-resume' }]);
 });
 
+test('background worker generates missing status rules before a durable status intent', async t => {
+  const dataDir = await fs.mkdtemp(path.join(os.tmpdir(), 'mineprogress-background-rules-'));
+  t.after(() => fs.rm(dataDir, { recursive: true, force: true }));
+  const calls = [];
+  let prepares = 0;
+  const result = await runBackgroundUpdate(dataDir, 'session-rules', {
+    runCommand: async argv => {
+      calls.push(argv[0]);
+      if (argv[0] === 'update') {
+        prepares++;
+        return prepares === 1 ? {
+          outcome: 'status_rules_required',
+          model: { model: 'gpt-5.6-luna', reasoningEffort: 'medium' },
+          generation: {
+            prompt: 'prompts/status-rules.md', availableStatuses: ['Todo', 'Done'],
+            defaultStatus: 'Todo', terminalStatuses: ['Done'],
+            statusRoles: { queued: 'Todo', active: '', review: '', blocked: '', completed: 'Done' }
+          }
+        } : { outcome: 'noop', reason: 'Rules are ready.' };
+      }
+      if (argv[0] === 'check') {
+        assert.ok(argv.includes('--rules-file'));
+        return { statusRuleGeneration: { required: false } };
+      }
+      throw new Error(`Unexpected command: ${argv.join(' ')}`);
+    },
+    invokeModel: async input => {
+      assert.deepEqual(input.schema.required, ['statuses', 'transitions']);
+      return {
+        statuses: [
+          { name: 'Todo', enterWhen: 'Work is queued and has not started.', doNotEnterWhen: 'Work is actively being implemented.' },
+          { name: 'Done', enterWhen: 'All required work and verification are complete.', doNotEnterWhen: 'Required work or verification remains.' }
+        ],
+        transitions: [{
+          from: 'Todo', to: 'Done', when: 'All required work and verification are complete.',
+          doNotApplyWhen: 'Required work or verification remains incomplete.'
+        }]
+      };
+    }
+  });
+  assert.equal(result.outcome, 'noop');
+  assert.deepEqual(calls, ['update', 'check', 'update']);
+});
+
 test('background worker reconciles an attempted submission before planning newer context', async t => {
   const dataDir = await fs.mkdtemp(path.join(os.tmpdir(), 'mineprogress-background-reconcile-'));
   t.after(() => fs.rm(dataDir, { recursive: true, force: true }));

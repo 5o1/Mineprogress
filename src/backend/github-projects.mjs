@@ -311,6 +311,64 @@ function commentMarker(key) {
   return `<!-- mineprogress:comment:${key.split(':').at(-1)} -->`;
 }
 
+function evidenceSection(body, heading, nextHeading = null) {
+  const startMatch = new RegExp(`^### ${heading}\\s*$`, 'imu').exec(body);
+  if (!startMatch) return '';
+  const start = startMatch.index + startMatch[0].length;
+  const remainder = body.slice(start);
+  const end = nextHeading ? new RegExp(`^### ${nextHeading}\\s*$`, 'imu').exec(remainder)?.index : -1;
+  return remainder.slice(0, end === undefined || end < 0 ? undefined : end).trim();
+}
+
+function compactManagedProgress(body) {
+  const normalized = String(body || '').replace(/<!--\s*mineprogress:comment:[^>]+-->/giu, '').trim();
+  const heading = /^## Progress Update[^\r\n]*$/imu.exec(normalized)?.[0] || 'Managed progress update';
+  const requirements = evidenceSection(normalized, 'Requirements', 'Results');
+  const results = evidenceSection(normalized, 'Results');
+  if (!requirements || !results) return '';
+  const compact = [heading, requirements && `Requirements:\n${requirements}`, results && `Results:\n${results}`]
+    .filter(Boolean).join('\n');
+  return [...compact].slice(0, 2000).join('');
+}
+
+function managedEvidenceFact(body, { url = null, timestamp = null, source = 'github-comment' } = {}) {
+  if (!String(body || '').match(/<!--\s*mineprogress:comment:[^>]+-->/iu) && source === 'github-comment') return null;
+  const text = compactManagedProgress(body);
+  if (!text) return null;
+  const digest = crypto.createHash('sha256').update(`${source}\n${text}`).digest('hex').slice(0, 20);
+  return { factId: `${source}:${digest}`, source, text, url, timestamp };
+}
+
+export async function readManagedEvidence(client, contentId) {
+  let after = null;
+  const facts = [];
+  do {
+    const query = `query($id:ID!, $after:String) {
+      node(id:$id) {
+        ... on Issue { comments(first:100,after:$after) { pageInfo { hasNextPage endCursor } nodes { body url createdAt } } }
+        ... on PullRequest { comments(first:100,after:$after) { pageInfo { hasNextPage endCursor } nodes { body url createdAt } } }
+      }
+    }`;
+    const data = await client(query, { id: contentId, after });
+    const comments = data.node?.comments;
+    if (!comments) return [];
+    for (const comment of comments.nodes || []) {
+      const fact = managedEvidenceFact(comment.body, { url: comment.url || null, timestamp: comment.createdAt || null });
+      if (fact) facts.push(fact);
+    }
+    after = comments.pageInfo?.hasNextPage ? comments.pageInfo.endCursor : null;
+  } while (after);
+  return facts;
+}
+
+export function readManagedDraftEvidence(body, url = null) {
+  const starts = [...String(body || '').matchAll(/^## Progress Update[^\r\n]*$/gimu)].map(match => match.index);
+  return starts.map((start, index) => {
+    const section = String(body).slice(start, starts[index + 1]);
+    return managedEvidenceFact(section, { url, source: 'github-draft' });
+  }).filter(Boolean);
+}
+
 export function prepareUpdateOperations(config, project, plan, {
   proposalBodyItemIds = [],
   repositoryReferences = []

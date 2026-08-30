@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { applyPreparedOperations, applyUpdatePlan, createDraftItem, createKanbanItem, createTextField, deleteKanbanItem, makeClient, normalizeProjectItem, prepareUpdateOperations, readProject, reconcilePreparedOperations, selectCreationRoute } from '../scripts/lib/github-projects.mjs';
+import { applyPreparedOperations, applyUpdatePlan, createDraftItem, createKanbanItem, createTextField, deleteKanbanItem, makeClient, normalizeProjectItem, prepareUpdateOperations, readManagedDraftEvidence, readManagedEvidence, readProject, reconcilePreparedOperations, selectCreationRoute } from '../scripts/lib/github-projects.mjs';
 
 const config = {
   owner: 'octocat',
@@ -382,4 +382,37 @@ test('guided initialization can create the configured update text field', async 
   }, 'PVT_1', 'Update');
   assert.deepEqual(variables, { projectId: 'PVT_1', name: 'Update' });
   assert.equal(field.id, 'PVTF_1');
+});
+
+test('managed GitHub progress is recovered as compact structured evidence', async () => {
+  let page = 0;
+  const facts = await readManagedEvidence(async (_query, variables) => {
+    page++;
+    assert.equal(variables.id, 'I_1');
+    return { node: { comments: {
+      pageInfo: { hasNextPage: page === 1, endCursor: page === 1 ? 'next' : null },
+      nodes: page === 1 ? [{
+        body: 'Unmanaged conversation.', url: 'https://example.test/unmanaged', createdAt: '2026-08-29T00:00:00Z'
+      }] : [{
+        body: '## Progress Update — 2026-08-30\n\n### Requirements\n\nKeep durable evidence.\n\n### Results\n\nRecovery passed.\n\n<!-- mineprogress:comment:key -->',
+        url: 'https://example.test/comment/1', createdAt: '2026-08-30T00:00:00Z'
+      }]
+    } } };
+  }, 'I_1');
+  assert.equal(page, 2);
+  assert.equal(facts.length, 1);
+  assert.match(facts[0].text, /Requirements:\nKeep durable evidence\./u);
+  assert.match(facts[0].text, /Results:\nRecovery passed\./u);
+  assert.doesNotMatch(facts[0].text, /mineprogress:comment/u);
+});
+
+test('managed Draft progress sections are recovered without rewriting the body', () => {
+  const facts = readManagedDraftEvidence([
+    '# Proposal', '', '## Progress Update — 2026-08-29', '', '### Requirements', '',
+    'First requirement.', '', '### Results', '', 'First result.', '',
+    '## Progress Update — 2026-08-30', '', '### Requirements', '',
+    'Second requirement.', '', '### Results', '', 'Second result.'
+  ].join('\n'), 'https://example.test/draft');
+  assert.equal(facts.length, 2);
+  assert.match(facts[1].text, /Second result/u);
 });

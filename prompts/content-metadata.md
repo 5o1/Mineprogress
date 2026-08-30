@@ -13,6 +13,12 @@ not treat Mineprogress generation, review, validation, background work, or submi
 that project work entered Review or another status. When rules are unavailable, leave status
 unchanged.
 
+`evidenceLedger.facts` contains compact evidence recovered from verified Mineprogress GitHub writes;
+`pendingEvidenceFacts` contains reviewed evidence whose transaction is not yet verified. Use both with
+the new journal and current remote fields when evaluating status rules. `statusIntent`, when present,
+is a durable user-requested target that the plan must satisfy. Do not discard it merely because its
+original journal entry has already been converted into evidence or submitted to GitHub.
+
 `primaryRepository` is authoritative binding metadata. The script maintains that repository and its
 description in the Issue proposal's `## Repository` section; do not repeat it in a progress comment
 unless the repository itself is directly relevant to that delta. `referenceLinks` contains other

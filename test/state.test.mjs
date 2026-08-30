@@ -12,12 +12,15 @@ import {
   completeSubmission,
   controlCommandAction,
   isControlPrompt,
+  mergeEvidenceFacts,
   openSession,
+  pendingPlanIsCurrent,
   pendingJournal,
   pruneStaleStates,
   readState,
   recordPreparedUpdate,
   recordReviewedUpdate,
+  recordStatusIntent,
   recordStagedUpdate,
   requireCommandAuthorization,
   resetStagedUpdate,
@@ -48,11 +51,11 @@ test('legacy unsubmitted plans are discarded and scheduled for structured backfi
   const dataDir = await temporaryData(t);
   const { state } = await openSession(dataDir, 'legacy');
   bindItem(state, { itemId: 'PVTI_1', title: 'Legacy item' });
-  state.planFormatVersion = 2;
+  state.planFormatVersion = 4;
   state.pendingPlan = { plan: { updates: [{ itemId: 'PVTI_1', summary: 'Old summary.' }] }, attempts: [] };
   await writeState(dataDir, state);
   const migrated = await readState(dataDir, 'legacy');
-  assert.equal(migrated.planFormatVersion, 4);
+  assert.equal(migrated.planFormatVersion, 5);
   assert.equal(migrated.pendingPlan, null);
   assert.ok(migrated.fullContextRequestedRevision > migrated.fullContextPlannedRevision);
   assert.equal(migrated.boundItems[0].backfillRevision, migrated.fullContextRequestedRevision);
@@ -62,14 +65,14 @@ test('legacy plans with an attempted submission remain recoverable during migrat
   const dataDir = await temporaryData(t);
   const { state } = await openSession(dataDir, 'attempted-legacy');
   bindItem(state, { itemId: 'PVTI_1', title: 'Legacy item' });
-  state.planFormatVersion = 2;
+  state.planFormatVersion = 4;
   state.pendingPlan = {
     plan: { updates: [{ itemId: 'PVTI_1', summary: 'Possibly submitted.' }] },
     attempts: [{ attemptId: 'attempt-1' }]
   };
   await writeState(dataDir, state);
   const migrated = await readState(dataDir, 'attempted-legacy');
-  assert.equal(migrated.planFormatVersion, 4);
+  assert.equal(migrated.planFormatVersion, 5);
   assert.notEqual(migrated.pendingPlan, null);
   assert.ok(migrated.fullContextRequestedRevision > migrated.fullContextPlannedRevision);
 });
@@ -361,6 +364,57 @@ test('exhausted updates require an explicit retry', () => {
   const retried = retryExhaustedUpdate(state);
   assert.notEqual(retried.runId, 'run-1');
   assert.equal(retried.fromSequence, 0);
+});
+
+test('verified evidence and status intent revisions survive transaction interruption boundaries', () => {
+  const state = newStateForTest();
+  bindItem(state, { itemId: 'PVTI_1', title: 'Parser', contentType: 'issue' });
+  state.fullContextPlannedRevision = state.fullContextRequestedRevision;
+  const event = appendJournal(state, {
+    kind: 'user', turnId: 'turn-1', text: 'The parser implementation and verification are complete.'
+  });
+  assert.equal(recordStatusIntent(state, 'PVTI_1', 'Done', event.sequence), true);
+  assert.equal(recordStatusIntent(state, 'PVTI_1', 'Done', event.sequence), false);
+  const run = beginUpdate(state, 'evidence-run');
+  const plan = { updates: [{ itemId: 'PVTI_1', status: 'Done' }] };
+  const review = approveRun(state, run, plan, [{
+    sequence: event.sequence,
+    disposition: 'included',
+    itemIds: ['PVTI_1'],
+    reason: 'The completion statement supports the terminal transition.'
+  }]);
+  storePendingPlan(state, run.runId, plan, {
+    projectId: 'PVT_1',
+    operations: [{ key: 'status-done', itemId: 'PVTI_1', kind: 'status' }]
+  }, review, {
+    satisfiedStatusIntents: [{ itemId: 'PVTI_1', targetStatus: 'Done', revision: 1 }]
+  });
+  assert.equal(state.journal.length, 0);
+  assert.equal(state.pendingPlan.evidenceFacts.length, 1);
+  assert.equal(state.pendingPlan.evidenceFacts[0].text, 'Status: Done');
+  assert.doesNotMatch(state.pendingPlan.evidenceFacts[0].text, /implementation and verification/u);
+  assert.equal(pendingPlanIsCurrent(state), true);
+
+  assert.equal(recordStatusIntent(state, 'PVTI_1', 'Review', 2), true);
+  assert.equal(state.boundItems[0].statusIntent.revision, 2);
+  assert.equal(pendingPlanIsCurrent(state), false);
+  completeSubmission(state);
+  assert.equal(state.boundItems[0].evidenceLedger.facts.length, 1);
+  assert.equal(state.boundItems[0].statusIntent.targetStatus, 'Review');
+  assert.equal(state.boundItems[0].statusIntentRevision, 2);
+});
+
+test('remote managed evidence is deduplicated in the per-item ledger', () => {
+  const state = newStateForTest();
+  bindItem(state, { itemId: 'PVTI_1', title: 'Parser' });
+  const fact = {
+    factId: 'github-comment:abc', source: 'github-comment', text: 'Requirements:\nParse input.',
+    url: 'https://github.test/comment/1', timestamp: '2026-08-30T00:00:00.000Z'
+  };
+  assert.equal(mergeEvidenceFacts(state, 'PVTI_1', [fact], { recoveredAt: '2026-08-30T01:00:00.000Z' }), 1);
+  assert.equal(mergeEvidenceFacts(state, 'PVTI_1', [fact]), 0);
+  assert.equal(state.boundItems[0].evidenceLedger.revision, 1);
+  assert.equal(state.boundItems[0].evidenceLedger.recoveredAt, '2026-08-30T01:00:00.000Z');
 });
 
 test('stale ended thread state is pruned after retention period', async t => {

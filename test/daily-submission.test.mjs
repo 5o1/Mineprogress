@@ -26,6 +26,10 @@ function pendingPlan(summary, before = null) {
     approvedAt: new Date().toISOString(),
     submissionStatus: 'ready',
     attempts: [],
+    evidenceFacts: [],
+    evidenceRevisions: { PVTI_1: 0 },
+    intentRevisions: { PVTI_1: 0 },
+    satisfiedStatusIntents: [],
     review: { decision: 'approve', reason: 'Verified.' }
   };
 }
