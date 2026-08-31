@@ -182,6 +182,30 @@ test('UserPromptSubmit resumes an interrupted elevated submission through the ac
   assert.match(context, /--data-dir/);
 });
 
+test('UserPromptSubmit resumes sandbox-blocked Project preparation through the active agent', async t => {
+  const dataDir = await fs.mkdtemp(path.join(os.tmpdir(), 'mineprogress-hook-prepare-elevation-'));
+  t.after(() => fs.rm(dataDir, { recursive: true, force: true }));
+  await markInitialized(dataDir);
+  const { state } = await openSession(dataDir, 'session-prepare-elevation');
+  bindItem(state, { itemId: 'PVTI_1', title: 'Parser' }, { source: 'create' });
+  state.workflowBlock = {
+    kind: 'sandbox-elevation', action: 'prepare', status: 'in_progress',
+    errorId: 'sandbox-prepare-error-1', requestedAt: new Date().toISOString(),
+    attemptCount: 1, logged: true
+  };
+  await writeState(dataDir, state);
+
+  const submitted = invoke('user-prompt', {
+    session_id: 'session-prepare-elevation', turn_id: 'turn-prepare-elevation', prompt: 'Continue.'
+  }, dataDir);
+
+  assert.equal(submitted.status, 0, submitted.stderr);
+  const context = JSON.parse(submitted.stdout).hookSpecificOutput.additionalContext;
+  assert.match(context, /Project snapshot could not be loaded inside the sandbox/);
+  assert.match(context, /update prepare --elevated-retry --reconcile-bindings/);
+  assert.match(context, /--session "session-prepare-elevation"/);
+});
+
 test('UserPromptSubmit records authorization for an explicit mutating command', async t => {
   const dataDir = await fs.mkdtemp(path.join(os.tmpdir(), 'mineprogress-hook-auth-'));
   t.after(() => fs.rm(dataDir, { recursive: true, force: true }));

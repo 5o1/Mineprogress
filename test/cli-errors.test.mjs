@@ -33,3 +33,13 @@ test('Codex elevated retry flag preserves following values before backend parsin
   assert.equal(result.submitted, false);
   assert.equal(result.reason, 'Thread cache does not exist.');
 });
+
+test('Codex elevated retry flag is accepted for Project preparation', async t => {
+  const dataDir = await fs.mkdtemp(path.join(os.tmpdir(), 'mineprogress-cli-prepare-elevation-'));
+  t.after(() => fs.rm(dataDir, { recursive: true, force: true }));
+  const result = await run([
+    'update', 'prepare', '--elevated-retry', '--reconcile-bindings',
+    '--session', 'session-x', '--data-dir', dataDir
+  ]);
+  assert.equal(result.outcome, 'noop');
+});

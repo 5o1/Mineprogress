@@ -5,7 +5,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { runBackgroundUpdate } from '../scripts/background-update.mjs';
 import { runHook } from '../src/frontends/codex/background-update.mjs';
-import { unresolvedErrors } from '../src/backend/errors.mjs';
+import { logError, unresolvedErrors } from '../src/backend/errors.mjs';
 import { appendJournal, beginUpdate, bindItem, openSession, readState, writeState } from '../src/backend/state.mjs';
 import { statusFixture } from './status-fixture.mjs';
 
@@ -40,6 +40,43 @@ test('background submission network denial persists one elevation request withou
   const errors = await unresolvedErrors(dataDir, { sessionId: 'session-elevation' });
   assert.equal(errors.length, 1);
   assert.equal(errors[0].errorCode, 'SANDBOX_NETWORK_DENIED');
+});
+
+test('background preparation network denial persists before a pending plan exists', async t => {
+  const dataDir = await fs.mkdtemp(path.join(os.tmpdir(), 'mineprogress-background-prepare-elevation-'));
+  t.after(() => fs.rm(dataDir, { recursive: true, force: true }));
+  const { state } = await openSession(dataDir, 'session-prepare-elevation');
+  bindItem(state, { itemId: 'PVTI_1', title: 'Parser' }, { source: 'create' });
+  appendJournal(state, { kind: 'assistant', turnId: 'turn-1', text: 'The item was created.' });
+  await writeState(dataDir, state);
+  const legacy = await logError(dataDir, {
+    sessionId: 'session-prepare-elevation',
+    stage: 'background-update',
+    errorCode: 'GH_NETWORK_ERROR',
+    message: 'GitHub API network request failed.'
+  });
+  let calls = 0;
+  const runCommand = async () => {
+    calls++;
+    throw Object.assign(new Error('fetch failed'), { code: 'GH_NETWORK_ERROR' });
+  };
+
+  const first = await runBackgroundUpdate(dataDir, 'session-prepare-elevation', { runCommand });
+  const second = await runBackgroundUpdate(dataDir, 'session-prepare-elevation', { runCommand });
+
+  assert.equal(first.outcome, 'preparation_needs_elevation');
+  assert.equal(second.outcome, 'preparation_needs_elevation');
+  assert.equal(calls, 1);
+  const restored = await readState(dataDir, 'session-prepare-elevation');
+  assert.equal(restored.pendingPlan, null);
+  assert.equal(restored.workflowBlock.action, 'prepare');
+  assert.equal(restored.workflowBlock.status, 'required');
+  assert.equal(restored.journal.length, 1);
+  assert.ok(restored.fullContextRequestedRevision > restored.fullContextPlannedRevision);
+  const errors = await unresolvedErrors(dataDir, { sessionId: 'session-prepare-elevation' });
+  assert.equal(errors.length, 1);
+  assert.equal(errors[0].errorCode, 'SANDBOX_NETWORK_DENIED');
+  assert.notEqual(errors[0].errorId, legacy.errorId);
 });
 
 test('background worker generates and reviews a plan without submitting it', async t => {

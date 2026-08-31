@@ -9,10 +9,10 @@ import { invokeCodexJson } from './model-runtime.mjs';
 import { RESOURCE_ROOT, resolveCodexDataDir } from './runtime.mjs';
 import {
   isSubmissionElevationCandidate,
-  pendingSubmissionElevation,
+  pendingElevation,
   requestSubmissionElevation,
   resolveCompletedSubmissionElevation,
-  submissionBlockedByElevation
+  workflowBlockedByElevation
 } from './submission-elevation.mjs';
 
 function planSchema(prepared) {
@@ -177,11 +177,19 @@ export async function runBackgroundUpdate(dataDir, sessionId, {
   try {
     await resolveCompletedSubmissionElevation(dataDir, sessionId);
     const initial = await readState(dataDir, sessionId);
-    const existingElevation = pendingSubmissionElevation(initial);
+    const existingElevation = pendingElevation(initial);
     if (existingElevation) {
-      return { outcome: 'submission_needs_elevation', elevationRequest: existingElevation };
+      return {
+        outcome: existingElevation.action === 'prepare'
+          ? 'preparation_needs_elevation'
+          : 'submission_needs_elevation',
+        elevationRequest: existingElevation
+      };
     }
-    if (submissionBlockedByElevation(initial)) return { outcome: 'submission_elevation_failed' };
+    const failedElevation = workflowBlockedByElevation(initial);
+    if (failedElevation) {
+      return { outcome: `${failedElevation.action || 'submission'}_elevation_failed` };
+    }
     while (true) {
       const prepareArgs = ['update', 'prepare', '--session', sessionId, '--data-dir', dataDir];
       if (reconcileBindings) prepareArgs.push('--reconcile-bindings');
@@ -267,7 +275,14 @@ export async function runBackgroundUpdate(dataDir, sessionId, {
   } catch (error) {
     if (isSubmissionElevationCandidate(error)) {
       const elevationRequest = await requestSubmissionElevation(dataDir, sessionId, error);
-      if (elevationRequest) return { outcome: 'submission_needs_elevation', elevationRequest };
+      if (elevationRequest) {
+        return {
+          outcome: elevationRequest.action === 'prepare'
+            ? 'preparation_needs_elevation'
+            : 'submission_needs_elevation',
+          elevationRequest
+        };
+      }
     }
     const state = await readState(dataDir, sessionId).catch(() => null);
     const event = await logError(dataDir, {

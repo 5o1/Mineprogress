@@ -146,6 +146,11 @@ The next `UserPromptSubmit` asks the active agent to run the exact `update submi
 an interrupted elevated attempt is requested again on resume, while a completed non-sandbox
 failure is logged and stops automatic retries.
 
+The same recovery applies when the first Project read fails before a plan exists. In that case the
+thread stores a workflow block, and the next prompt runs `update prepare --elevated-retry
+--reconcile-bindings`. A successful preparation persists the Project snapshot before background
+generation resumes; the journal and full-thread backfill checkpoint remain unchanged throughout.
+
 After five rejected rounds, automatic processing remains suspended and the checkpoint stays put.
 Only an explicit user-requested `update retry` starts a fresh run over that same pending journal.
 
@@ -153,7 +158,8 @@ Only an explicit user-requested `update retry` starts a fresh run over that same
 
 `status` folds JSONL locally, reports the journal state-machine phase and whether a reviewed
 submission is ready, unverified, or awaiting sandbox elevation, and returns at most 20 unresolved
-summaries for the current thread. It does not query GitHub or expose the complete log, stack traces,
+summaries for the current thread. It also reports a workflow block when Project preparation is
+waiting for sandbox elevation. It does not query GitHub or expose the complete log, stack traces,
 tokens, personal paths, or journal.
 `status resolve <errorId>` appends a resolution event without rewriting history.
 

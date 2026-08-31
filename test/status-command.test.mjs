@@ -79,6 +79,11 @@ test('status explains why a pending submission is waiting for external retry', a
     kanban: { defaultStatus: 'Todo', terminalStatuses: ['Done'] }
   }));
   const state = newState('s1');
+  state.workflowBlock = {
+    kind: 'sandbox-elevation',
+    label: 'prepare sandbox elevation',
+    status: 'required'
+  };
   state.pendingPlan = {
     plan: { updates: [{ itemId: 'PVTI_1' }] },
     operations: [{ key: 'comment', itemId: 'PVTI_1', kind: 'comment' }],
@@ -101,4 +106,6 @@ test('status explains why a pending submission is waiting for external retry', a
 
   assert.equal(result.pendingPlanLine,
     'Pending submission: 1 item update(s), 1 write operation(s), pending; sandbox elevation required.');
+  assert.equal(result.workflowBlockLine,
+    'Workflow block: prepare sandbox elevation required.');
 });

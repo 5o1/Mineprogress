@@ -36,6 +36,8 @@ export function newState(sessionId, now = new Date().toISOString()) {
     nextSequence: 1,
     lastPlannedUpdate: null,
     lastSuccessfulUpdate: null,
+    workflowBlock: null,
+    completedWorkflowBlock: null,
     completedSubmissionBlock: null,
     pendingPlan: null,
     activeUpdate: null,
@@ -67,6 +69,8 @@ function normalizeState(state) {
     item.statusIntent ??= null;
   }
   state.lastPlannedUpdate ??= state.lastSuccessfulUpdate || null;
+  state.workflowBlock ??= null;
+  state.completedWorkflowBlock ??= null;
   state.completedSubmissionBlock ??= null;
   state.dailySubmissionDate ??= calendarDate(state.updatedAt || state.createdAt);
   state.pendingPlan ??= null;

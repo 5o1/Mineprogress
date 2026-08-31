@@ -12,7 +12,7 @@ import { controlCommandAction } from './commands.mjs';
 import { createCodexRuntime, RESOURCE_ROOT, resolveCodexDataDir } from './runtime.mjs';
 import {
   isSubmissionElevationCandidate,
-  pendingSubmissionElevation,
+  pendingElevation,
   requestSubmissionElevation,
   resolveCompletedSubmissionElevation,
   submissionBlockedByElevation
@@ -55,8 +55,14 @@ function emitCodexResult(mode, result, event, dataDir) {
     if (result?.elevationRequest) {
       const quote = value => `"${String(value).replaceAll('"', '\\"')}"`;
       const cli = path.join(process.env.PLUGIN_ROOT || RESOURCE_ROOT, 'scripts', 'mineprogress.mjs');
-      const command = `node ${quote(cli)} update submit --elevated-retry --session ${quote(event.sessionId)} --data-dir ${quote(dataDir)}`;
-      context.push(`Mineprogress has a durable reviewed GitHub submission awaiting sandbox elevation. Before answering the user, run this exact command once using the shell tool's sandbox-elevation mechanism: ${command}. Do not regenerate the plan, retry it inside the sandbox first, or ask the user to log in unless this elevated command reports an authentication error.`);
+      const prepare = result.elevationRequest.action === 'prepare';
+      const action = prepare ? 'prepare' : 'submit';
+      const reconcile = prepare ? ' --reconcile-bindings' : '';
+      const command = `node ${quote(cli)} update ${action} --elevated-retry${reconcile} --session ${quote(event.sessionId)} --data-dir ${quote(dataDir)}`;
+      const waiting = prepare
+        ? 'a durable journal batch whose GitHub Project snapshot could not be loaded inside the sandbox'
+        : 'a durable reviewed GitHub submission';
+      context.push(`Mineprogress has ${waiting} awaiting sandbox elevation. Before answering the user, run this exact command once using the shell tool's sandbox-elevation mechanism: ${command}. Do not regenerate the plan, retry it inside the sandbox first, or ask the user to log in unless this elevated command reports an authentication error.`);
     }
     console.log(JSON.stringify({
       hookSpecificOutput: {
@@ -73,7 +79,7 @@ export async function dispatchCodexHook(mode, input, runtimeOptions = {}) {
   if (!event.sessionId) return {};
   await resolveCompletedSubmissionElevation(dataDir, event.sessionId);
   const before = await readState(dataDir, event.sessionId);
-  const existingElevation = pendingSubmissionElevation(before);
+  const existingElevation = pendingElevation(before);
   const runtime = createCodexRuntime({
     ...runtimeOptions,
     dataDir,

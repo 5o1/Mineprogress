@@ -10,7 +10,10 @@ import { handleUserPrompt } from '../src/backend/lifecycle.mjs';
 import { bindItem, openSession, readState, writeState } from '../src/backend/state.mjs';
 import { submitPendingUpdate } from '../src/frontends/codex/cli.mjs';
 import { dispatchCodexHook } from '../src/frontends/codex/hook.mjs';
-import { requestSubmissionElevation } from '../src/frontends/codex/submission-elevation.mjs';
+import {
+  beginSubmissionElevation,
+  requestSubmissionElevation
+} from '../src/frontends/codex/submission-elevation.mjs';
 
 const root = path.dirname(path.dirname(fileURLToPath(import.meta.url)));
 
@@ -286,4 +289,38 @@ test('resume resolves an elevation error after interruption between verification
   restored = await readState(dataDir, 'session-cleanup');
   assert.equal(restored.completedSubmissionBlock, null);
   assert.deepEqual(await unresolvedErrors(dataDir, { sessionId: 'session-cleanup' }), []);
+});
+
+test('resume resolves a preparation elevation after its durable snapshot checkpoint', async t => {
+  const dataDir = await fs.mkdtemp(path.join(os.tmpdir(), 'mineprogress-prepare-cleanup-'));
+  t.after(() => fs.rm(dataDir, { recursive: true, force: true }));
+  const { state } = await openSession(dataDir, 'session-prepare-cleanup');
+  bindItem(state, { itemId: 'PVTI_1', title: 'Parser' }, { source: 'create' });
+  await writeState(dataDir, state);
+  const elevation = await requestSubmissionElevation(
+    dataDir,
+    'session-prepare-cleanup',
+    Object.assign(new Error('fetch failed'), { code: 'GH_NETWORK_ERROR' }),
+    { action: 'prepare' }
+  );
+  await beginSubmissionElevation(dataDir, 'session-prepare-cleanup', 'prepare');
+  let restored = await readState(dataDir, 'session-prepare-cleanup');
+  restored.completedWorkflowBlock = {
+    ...restored.workflowBlock,
+    completedAt: new Date().toISOString(),
+    completionReason: 'prepared'
+  };
+  restored.workflowBlock = null;
+  await writeState(dataDir, restored);
+  assert.equal((await unresolvedErrors(dataDir, { sessionId: 'session-prepare-cleanup' })).length, 1);
+
+  await dispatchCodexHook('user-prompt', {
+    session_id: 'session-prepare-cleanup', turn_id: 'turn-resume', prompt: 'Resume.'
+  }, { dataDir, resourceRoot: root, environment: {} });
+
+  restored = await readState(dataDir, 'session-prepare-cleanup');
+  assert.equal(restored.completedWorkflowBlock, null);
+  assert.equal(restored.workflowBlock, null);
+  assert.deepEqual(await unresolvedErrors(dataDir, { sessionId: 'session-prepare-cleanup' }), []);
+  assert.equal(elevation.action, 'prepare');
 });

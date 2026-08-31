@@ -16,28 +16,31 @@ import {
   failSubmissionElevation,
   isSubmissionElevationCandidate,
   requestSubmissionElevation,
-  resolveCompletedSubmissionElevation
+  resolveCompletedSubmissionElevation,
+  resolvePreparedElevation
 } from './submission-elevation.mjs';
 
 export { parseProjectUrl, resolveInitializationCreationRepository };
 
-async function executeWithElevation({ dataDir, sessionId, elevatedRetry, execute }) {
+async function executeWithElevation({ dataDir, sessionId, elevatedRetry, action, execute }) {
   if (sessionId) await resolveCompletedSubmissionElevation(dataDir, sessionId);
-  if (elevatedRetry && sessionId) await beginSubmissionElevation(dataDir, sessionId);
+  if (elevatedRetry && sessionId) await beginSubmissionElevation(dataDir, sessionId, action);
   try {
     const result = await execute();
     if (sessionId) await resolveCompletedSubmissionElevation(dataDir, sessionId);
+    if (sessionId && action === 'prepare') await resolvePreparedElevation(dataDir, sessionId, action);
     return result;
   } catch (error) {
-    if (elevatedRetry && sessionId) await failSubmissionElevation(dataDir, sessionId, error);
+    if (elevatedRetry && sessionId) await failSubmissionElevation(dataDir, sessionId, error, action);
     throw error;
   }
 }
 
 export async function run(argv = process.argv.slice(2), options = {}) {
   const elevatedRetry = argv.includes('--elevated-retry');
-  if (elevatedRetry && !(argv[0] === 'update' && argv[1] === 'submit')) {
-    throw Object.assign(new Error('--elevated-retry is valid only for update submit.'), { code: 'ELEVATED_RETRY_INVALID' });
+  const elevationAction = argv[0] === 'update' && ['prepare', 'submit'].includes(argv[1]) ? argv[1] : null;
+  if (elevatedRetry && !elevationAction) {
+    throw Object.assign(new Error('--elevated-retry is valid only for update prepare or update submit.'), { code: 'ELEVATED_RETRY_INVALID' });
   }
   const effectiveArgv = argv.filter(value => value !== '--elevated-retry');
   const environment = elevatedRetry
@@ -51,6 +54,7 @@ export async function run(argv = process.argv.slice(2), options = {}) {
     dataDir,
     sessionId,
     elevatedRetry,
+    action: elevationAction,
     execute: () => runBackend(effectiveArgv, runtime)
   });
 }
@@ -72,6 +76,7 @@ export async function submitPendingUpdate(dataDir, sessionId, options = {}, runt
     dataDir,
     sessionId,
     elevatedRetry,
+    action: 'submit',
     execute: () => submitBackendUpdate(dataDir, sessionId, backendOptions, runtime)
   });
 }
@@ -89,7 +94,10 @@ export async function main(argv = process.argv.slice(2)) {
         const { flags } = parseCommandArgs(effectiveArgv.slice(1));
         const dataDir = flags['data-dir'] ? path.resolve(flags['data-dir']) : resolveCodexDataDir(effectiveArgv, process.env);
         const sessionId = flags.session || process.env.MINEPROGRESS_SESSION_ID || null;
-        if (sessionId) await requestSubmissionElevation(dataDir, sessionId, error);
+        const action = effectiveArgv[0] === 'update' && ['prepare', 'submit'].includes(effectiveArgv[1])
+          ? effectiveArgv[1]
+          : null;
+        if (sessionId) await requestSubmissionElevation(dataDir, sessionId, error, { action });
       } catch {}
       console.error(JSON.stringify({ errorCode: error.code, requestElevation: true, message: 'Retry this exact command once with sandbox elevation.' }));
       process.exitCode = 77;
