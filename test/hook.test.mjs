@@ -151,6 +151,37 @@ test('Stop does not revise a plan while an earlier submission is unverified', as
   assert.equal(restored.journal.length, 2);
 });
 
+test('UserPromptSubmit resumes an interrupted elevated submission through the active agent', async t => {
+  const dataDir = await fs.mkdtemp(path.join(os.tmpdir(), 'mineprogress-hook-elevation-'));
+  t.after(() => fs.rm(dataDir, { recursive: true, force: true }));
+  await markInitialized(dataDir);
+  const { state } = await openSession(dataDir, 'session-elevation');
+  bindItem(state, { itemId: 'PVTI_1', title: 'Parser' });
+  state.pendingPlan = {
+    plan: { updates: [{ itemId: 'PVTI_1', summary: 'Pending.' }] },
+    projectId: 'PVT_1',
+    operations: [{ key: 'operation-1', itemId: 'PVTI_1', kind: 'summary' }],
+    throughSequence: 1,
+    submissionStatus: 'ready',
+    attempts: [],
+    submissionBlock: {
+      kind: 'sandbox-elevation', status: 'in_progress', errorId: 'sandbox-error-1', requestedAt: new Date().toISOString(),
+      attemptCount: 1, logged: true
+    }
+  };
+  await writeState(dataDir, state);
+
+  const submitted = invoke('user-prompt', {
+    session_id: 'session-elevation', turn_id: 'turn-elevation', prompt: 'Continue ordinary work.'
+  }, dataDir);
+  assert.equal(submitted.status, 0, submitted.stderr);
+  const context = JSON.parse(submitted.stdout).hookSpecificOutput.additionalContext;
+  assert.match(context, /durable reviewed GitHub submission awaiting sandbox elevation/);
+  assert.match(context, /update submit --elevated-retry/);
+  assert.match(context, /--session "session-elevation"/);
+  assert.match(context, /--data-dir/);
+});
+
 test('UserPromptSubmit records authorization for an explicit mutating command', async t => {
   const dataDir = await fs.mkdtemp(path.join(os.tmpdir(), 'mineprogress-hook-auth-'));
   t.after(() => fs.rm(dataDir, { recursive: true, force: true }));

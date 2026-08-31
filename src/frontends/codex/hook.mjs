@@ -1,3 +1,4 @@
+import path from 'node:path';
 import process from 'node:process';
 import {
   handleSessionEnd,
@@ -6,8 +7,16 @@ import {
   handleUserPrompt
 } from '../../backend/index.mjs';
 import { logError } from '../../backend/errors.mjs';
+import { readState } from '../../backend/state.mjs';
 import { controlCommandAction } from './commands.mjs';
-import { createCodexRuntime, resolveCodexDataDir } from './runtime.mjs';
+import { createCodexRuntime, RESOURCE_ROOT, resolveCodexDataDir } from './runtime.mjs';
+import {
+  isSubmissionElevationCandidate,
+  pendingSubmissionElevation,
+  requestSubmissionElevation,
+  resolveCompletedSubmissionElevation,
+  submissionBlockedByElevation
+} from './submission-elevation.mjs';
 
 let hookInput = {};
 
@@ -36,14 +45,23 @@ function emitCodexResult(mode, result, event, dataDir) {
     return;
   }
   if (mode === 'user-prompt') {
-    if (!result?.command) return;
-    const additionalContext = result.initializationRequested
-      ? `Mineprogress initialization is explicitly user-triggered for session_id=${event.sessionId}, data_dir=${dataDir}. Pass data_dir to the mineprogress CLI.`
-      : `Mineprogress command is explicitly user-triggered for session_id=${event.sessionId}, data_dir=${dataDir}. Pass both values to the mineprogress CLI.`;
+    if (!result?.command && !result?.elevationRequest) return;
+    const context = [];
+    if (result?.command) {
+      context.push(result.initializationRequested
+        ? `Mineprogress initialization is explicitly user-triggered for session_id=${event.sessionId}, data_dir=${dataDir}. Pass data_dir to the mineprogress CLI.`
+        : `Mineprogress command is explicitly user-triggered for session_id=${event.sessionId}, data_dir=${dataDir}. Pass both values to the mineprogress CLI.`);
+    }
+    if (result?.elevationRequest) {
+      const quote = value => `"${String(value).replaceAll('"', '\\"')}"`;
+      const cli = path.join(process.env.PLUGIN_ROOT || RESOURCE_ROOT, 'scripts', 'mineprogress.mjs');
+      const command = `node ${quote(cli)} update submit --elevated-retry --session ${quote(event.sessionId)} --data-dir ${quote(dataDir)}`;
+      context.push(`Mineprogress has a durable reviewed GitHub submission awaiting sandbox elevation. Before answering the user, run this exact command once using the shell tool's sandbox-elevation mechanism: ${command}. Do not regenerate the plan, retry it inside the sandbox first, or ask the user to log in unless this elevated command reports an authentication error.`);
+    }
     console.log(JSON.stringify({
       hookSpecificOutput: {
         hookEventName: 'UserPromptSubmit',
-        additionalContext
+        additionalContext: context.join(' ')
       }
     }));
   }
@@ -53,12 +71,40 @@ export async function dispatchCodexHook(mode, input, runtimeOptions = {}) {
   const dataDir = runtimeOptions.dataDir || resolveCodexDataDir([], runtimeOptions.environment || process.env);
   const event = normalizeCodexEvent(mode, input);
   if (!event.sessionId) return {};
-  const runtime = createCodexRuntime({ ...runtimeOptions, dataDir, sessionId: event.sessionId });
-  if (mode === 'session-start') return handleSessionStart(event, runtime);
-  if (mode === 'user-prompt') return handleUserPrompt(event, runtime);
-  if (mode === 'stop') return handleTurnStop(event, runtime);
-  if (mode === 'session-end') return handleSessionEnd(event, runtime);
-  throw Object.assign(new Error(`Unknown hook mode: ${mode}`), { code: 'HOOK_MODE_INVALID' });
+  await resolveCompletedSubmissionElevation(dataDir, event.sessionId);
+  const before = await readState(dataDir, event.sessionId);
+  const existingElevation = pendingSubmissionElevation(before);
+  const runtime = createCodexRuntime({
+    ...runtimeOptions,
+    dataDir,
+    sessionId: event.sessionId,
+    deferSubmission: submissionBlockedByElevation(before)
+  });
+  let result;
+  try {
+    if (mode === 'session-start') result = await handleSessionStart(event, runtime);
+    else if (mode === 'user-prompt') result = await handleUserPrompt(event, runtime);
+    else if (mode === 'stop') result = await handleTurnStop(event, runtime);
+    else if (mode === 'session-end') result = await handleSessionEnd(event, runtime);
+    else throw Object.assign(new Error(`Unknown hook mode: ${mode}`), { code: 'HOOK_MODE_INVALID' });
+  } catch (error) {
+    if (!['user-prompt', 'session-end'].includes(mode) || !isSubmissionElevationCandidate(error)) throw error;
+    const elevationRequest = await requestSubmissionElevation(dataDir, event.sessionId, error);
+    if (!elevationRequest) throw error;
+    return {
+      elevationRequest,
+      ...(event.commandAction ? {
+        command: event.commandAction,
+        commandAuthorized: true,
+        initializationRequested: event.commandAction === 'init'
+      } : {})
+    };
+  }
+  await resolveCompletedSubmissionElevation(dataDir, event.sessionId);
+  if (mode === 'user-prompt' && existingElevation) {
+    return { ...result, elevationRequest: existingElevation };
+  }
+  return result;
 }
 
 export async function main(mode = process.argv[2]) {

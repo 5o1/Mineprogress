@@ -51,8 +51,13 @@ export async function handleUserPrompt(event, runtime) {
   }
   const currentDate = calendarDate(typeof runtime.now === 'function' ? runtime.now() : new Date());
   let dailySubmission = null;
-  if (initialized && existing?.pendingPlan && existing.dailySubmissionDate !== currentDate) {
-    dailySubmission = await submitPendingUpdate(runtime.dataDir, event.sessionId, { verify: true }, runtime);
+  let submissionError = null;
+  if (initialized && existing?.pendingPlan && existing.dailySubmissionDate !== currentDate && !runtime.deferSubmission) {
+    try {
+      dailySubmission = await submitPendingUpdate(runtime.dataDir, event.sessionId, { verify: true }, runtime);
+    } catch (error) {
+      submissionError = error;
+    }
   }
   await withSessionLock(runtime.dataDir, event.sessionId, async () => {
     const { state } = await openSession(runtime.dataDir, event.sessionId);
@@ -64,6 +69,7 @@ export async function handleUserPrompt(event, runtime) {
     appendJournal(state, { kind: 'user', turnId: event.turnId, text: event.prompt, control });
     await writeState(runtime.dataDir, state);
   });
+  if (submissionError) throw submissionError;
   return {
     ...(control ? { command: action, commandAuthorized: true } : {}),
     ...(dailySubmission ? { dailySubmission } : {})
@@ -98,6 +104,8 @@ export async function handleSessionEnd(event, runtime) {
     await writeState(runtime.dataDir, current);
     return current;
   });
-  if (state?.pendingPlan) await submitPendingUpdate(runtime.dataDir, event.sessionId, { verify: false }, runtime);
+  if (state?.pendingPlan && !runtime.deferSubmission) {
+    await submitPendingUpdate(runtime.dataDir, event.sessionId, { verify: false }, runtime);
+  }
   return {};
 }

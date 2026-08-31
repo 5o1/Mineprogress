@@ -36,6 +36,7 @@ export function newState(sessionId, now = new Date().toISOString()) {
     nextSequence: 1,
     lastPlannedUpdate: null,
     lastSuccessfulUpdate: null,
+    completedSubmissionBlock: null,
     pendingPlan: null,
     activeUpdate: null,
     unverifiedEvidenceFacts: [],
@@ -66,8 +67,12 @@ function normalizeState(state) {
     item.statusIntent ??= null;
   }
   state.lastPlannedUpdate ??= state.lastSuccessfulUpdate || null;
+  state.completedSubmissionBlock ??= null;
   state.dailySubmissionDate ??= calendarDate(state.updatedAt || state.createdAt);
   state.pendingPlan ??= null;
+  if (state.pendingPlan) {
+    state.pendingPlan.submissionBlock ??= null;
+  }
   state.unverifiedEvidenceFacts = normalizeEvidenceFacts(state.unverifiedEvidenceFacts || []);
   state.processedJournal ??= [];
   state.backgroundRequestedThrough ??= null;
@@ -503,7 +508,16 @@ function discardReleasedItemTransactions(state, itemIds) {
         .filter(key => operationKeys.has(key));
     }
   }
-  if (!pending.operations.length) state.pendingPlan = null;
+  if (!pending.operations.length) {
+    if (pending.submissionBlock) {
+      state.completedSubmissionBlock = {
+        ...pending.submissionBlock,
+        completedAt: new Date().toISOString(),
+        completionReason: 'discarded'
+      };
+    }
+    state.pendingPlan = null;
+  }
 }
 
 export function releaseRemoteTerminalBindings(state, projectItems, terminalStatuses) {
@@ -663,6 +677,7 @@ export function storePendingPlan(state, runId, plan, submission, review, {
     approvedAt: new Date().toISOString(),
     submissionStatus: 'ready',
     attempts: [],
+    submissionBlock: null,
     review: run.approvedReview,
     evidenceFacts,
     evidenceRevisions: planRevisionMap(state, 'evidence'),
@@ -706,6 +721,7 @@ export function confirmSubmissionResponse(state, attemptId) {
 
 export function completeSubmission(state) {
   if (!state.pendingPlan) return false;
+  const submissionBlock = state.pendingPlan.submissionBlock;
   const proposalItemIds = new Set((state.pendingPlan.operations || [])
     .filter(operation => operation.kind === 'proposalBody')
     .map(operation => operation.itemId));
@@ -723,6 +739,13 @@ export function completeSubmission(state) {
     sequence: state.pendingPlan.throughSequence,
     completedAt: new Date().toISOString()
   };
+  if (submissionBlock) {
+    state.completedSubmissionBlock = {
+      ...submissionBlock,
+      completedAt: new Date().toISOString(),
+      completionReason: 'verified'
+    };
+  }
   state.pendingPlan = null;
   return true;
 }

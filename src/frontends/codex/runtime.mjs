@@ -26,13 +26,17 @@ export function createCodexRuntime({
   environment = process.env,
   resourceRoot = RESOURCE_ROOT,
   clientProvider,
-  referenceProvider
+  referenceProvider,
+  deferSubmission = false,
+  now
 } = {}) {
   return {
     dataDir: dataDir || requireDataDir(environment),
     sessionId: sessionId || environment.MINEPROGRESS_SESSION_ID || null,
     environment,
     resourceRoot,
+    deferSubmission,
+    ...(typeof now === 'function' ? { now } : {}),
     referenceLinks: referenceProvider || (() => discoverWorkspaceReferences()),
     githubClient: clientProvider || (async () => {
       const authentication = await resolveGithubToken({ env: environment });

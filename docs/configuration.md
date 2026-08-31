@@ -10,8 +10,10 @@ repository as its Issue repository; multiple linked repositories require an expl
 no Issue repository it creates drafts. It creates a missing `Update` text field, but it will not
 invent a missing Status field.
 
-Codex retries `gh` authentication once with sandbox elevation before deciding that a login is
-missing. This avoids treating a sandbox-blocked credential store as a logged-out GitHub CLI.
+Mineprogress treats sandbox-blocked `gh` credential access and GitHub network requests separately
+from invalid credentials. Automatic hooks retain the reviewed transaction and ask the active agent
+for one exact elevated retry on the next prompt. Only a failed elevated attempt is treated as a
+real authentication or network error; users should not log in again based only on a sandbox result.
 
 `MINEPROGRESS_CONFIG` remains available as an advanced override for development or centrally managed
 configuration. `config.example.json` documents the complete schema; users do not need to copy it.

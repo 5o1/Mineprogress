@@ -5,7 +5,7 @@ import path from 'node:path';
 import process from 'node:process';
 import test from 'node:test';
 import { unresolvedErrors } from '../src/backend/errors.mjs';
-import { main } from '../src/frontends/codex/cli.mjs';
+import { main, run } from '../src/frontends/codex/cli.mjs';
 
 test('command failures after boolean flags are logged to the requested session', async () => {
   const dataDir = await fs.mkdtemp(path.join(os.tmpdir(), 'mineprogress-cli-error-'));
@@ -22,4 +22,14 @@ test('command failures after boolean flags are logged to the requested session',
     process.exitCode = previousExitCode;
     await fs.rm(dataDir, { recursive: true, force: true });
   }
+});
+
+test('Codex elevated retry flag preserves following values before backend parsing', async t => {
+  const dataDir = await fs.mkdtemp(path.join(os.tmpdir(), 'mineprogress-cli-elevation-'));
+  t.after(() => fs.rm(dataDir, { recursive: true, force: true }));
+  const result = await run([
+    'update', 'submit', '--elevated-retry', '--session', 'session-x', '--data-dir', dataDir
+  ]);
+  assert.equal(result.submitted, false);
+  assert.equal(result.reason, 'Thread cache does not exist.');
 });

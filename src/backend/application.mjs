@@ -1197,8 +1197,9 @@ async function statusCommand(dataDir, flags, positional, runtime) {
     : state?.journal?.length
       ? `Journal state: pending; ${state.journal.length} unprocessed item(s).`
       : 'Journal state: idle; no unprocessed items.';
+  const submissionBlock = state?.pendingPlan?.submissionBlock;
   const pendingPlanLine = state?.pendingPlan
-    ? `Pending submission: ${state.pendingPlan.plan.updates.length} item update(s), ${state.pendingPlan.operations.length} write operation(s), ${state.pendingPlan.submissionStatus}.`
+    ? `Pending submission: ${state.pendingPlan.plan.updates.length} item update(s), ${state.pendingPlan.operations.length} write operation(s), ${state.pendingPlan.submissionStatus}${submissionBlock ? `; ${submissionBlock.label || 'external retry'} ${submissionBlock.status}` : ''}.`
     : 'Pending submission: none.';
   return {
     scope: all ? 'all sessions' : sessionId,

@@ -139,8 +139,12 @@ generator input.
 
 An approved unchanged plan advances only the planning checkpoint after complete journal coverage.
 Token, permission, network, configuration, model, or subagent failures stop immediately without
-consuming a content retry. An explicit sandbox denial requests one elevated retry when an
-interactive command can request it.
+consuming a content retry. When an automatic submission encounters a sandbox-denied credential or
+network operation, it persists an elevation state beside the pending plan and retains the queue.
+The next `UserPromptSubmit` asks the active agent to run the exact `update submit
+--elevated-retry` command with sandbox elevation. A successful read-back resolves that request;
+an interrupted elevated attempt is requested again on resume, while a completed non-sandbox
+failure is logged and stops automatic retries.
 
 After five rejected rounds, automatic processing remains suspended and the checkpoint stays put.
 Only an explicit user-requested `update retry` starts a fresh run over that same pending journal.
@@ -148,9 +152,9 @@ Only an explicit user-requested `update retry` starts a fresh run over that same
 ## Error state
 
 `status` folds JSONL locally, reports the journal state-machine phase and whether a reviewed
-submission is ready or unverified, and returns at most 20 unresolved summaries for the current
-thread. It does not query GitHub or expose the complete log, stack traces, tokens, personal paths,
-or journal.
+submission is ready, unverified, or awaiting sandbox elevation, and returns at most 20 unresolved
+summaries for the current thread. It does not query GitHub or expose the complete log, stack traces,
+tokens, personal paths, or journal.
 `status resolve <errorId>` appends a resolution event without rewriting history.
 
 Ended thread caches are retained for 30 days to support resume, then pruned from `PLUGIN_DATA` on a

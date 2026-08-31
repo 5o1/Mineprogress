@@ -5,10 +5,42 @@ import os from 'node:os';
 import path from 'node:path';
 import { runBackgroundUpdate } from '../scripts/background-update.mjs';
 import { runHook } from '../src/frontends/codex/background-update.mjs';
-import { appendJournal, beginUpdate, bindItem, openSession, writeState } from '../src/backend/state.mjs';
+import { unresolvedErrors } from '../src/backend/errors.mjs';
+import { appendJournal, beginUpdate, bindItem, openSession, readState, writeState } from '../src/backend/state.mjs';
 import { statusFixture } from './status-fixture.mjs';
 
 const STATUS = statusFixture();
+
+test('background submission network denial persists one elevation request without duplicate errors', async t => {
+  const dataDir = await fs.mkdtemp(path.join(os.tmpdir(), 'mineprogress-background-elevation-'));
+  t.after(() => fs.rm(dataDir, { recursive: true, force: true }));
+  const { state } = await openSession(dataDir, 'session-elevation');
+  bindItem(state, { itemId: 'PVTI_1', title: 'Parser' });
+  state.pendingPlan = {
+    plan: { updates: [{ itemId: 'PVTI_1', summary: 'Pending.' }] },
+    projectId: 'PVT_1',
+    operations: [{ key: 'operation-1', itemId: 'PVTI_1', kind: 'summary' }],
+    throughSequence: 1,
+    submissionStatus: 'ready',
+    attempts: [],
+    submissionBlock: null
+  };
+  await writeState(dataDir, state);
+  const runCommand = async () => {
+    throw Object.assign(new Error('fetch failed'), { code: 'GH_NETWORK_ERROR' });
+  };
+
+  const first = await runBackgroundUpdate(dataDir, 'session-elevation', { runCommand });
+  assert.equal(first.outcome, 'submission_needs_elevation');
+  const second = await runBackgroundUpdate(dataDir, 'session-elevation', { runCommand });
+  assert.equal(second.outcome, 'submission_needs_elevation');
+  const restored = await readState(dataDir, 'session-elevation');
+  assert.equal(restored.pendingPlan.submissionBlock.status, 'required');
+  assert.equal(restored.pendingPlan.submissionBlock.errorId, first.elevationRequest.errorId);
+  const errors = await unresolvedErrors(dataDir, { sessionId: 'session-elevation' });
+  assert.equal(errors.length, 1);
+  assert.equal(errors[0].errorCode, 'SANDBOX_NETWORK_DENIED');
+});
 
 test('background worker generates and reviews a plan without submitting it', async t => {
   const dataDir = await fs.mkdtemp(path.join(os.tmpdir(), 'mineprogress-background-'));
